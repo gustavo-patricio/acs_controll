@@ -8,9 +8,10 @@
 | Documento | Modelagem técnica do backend e estratégia de implementação |
 | Versão | 0.1 |
 | Estado | Em elaboração |
-| Linguagem principal | Python |
+| Linguagem principal | Python 3.13 |
 | Framework | FastAPI |
 | Protocolo de gerenciamento | TR-069/CWMP |
+| Gerenciamento de projeto | uv |
 | Estratégia de desenvolvimento | Backend-first, com entregas verticais e incrementais |
 | Referência arquitetural principal | FreeACS, sem fork e sem tradução direta do código Java |
 
@@ -191,7 +192,8 @@ O worker não deverá considerar uma tarefa da fila como uma execução concluí
 
 | Área | Tecnologia inicial | Finalidade |
 | --- | --- | --- |
-| Linguagem | Python | Implementação do backend |
+| Linguagem | Python 3.13 | Implementação do backend |
+| Projeto e dependências | uv | Ambiente virtual, resolução, instalação e lockfile |
 | HTTP e REST | FastAPI/Starlette | API administrativa e base HTTP do endpoint CWMP |
 | Contratos | Pydantic | Validação de entradas, saídas e configurações |
 | Persistência | SQLAlchemy | Mapeamento e acesso ao banco |
@@ -206,12 +208,37 @@ O worker não deverá considerar uma tarefa da fila como uma execução concluí
 
 As bibliotecas específicas para SOAP/XML deverão ser escolhidas por uma prova técnica que avalie segurança contra XXE, controle sobre namespaces, desempenho, manutenção e licença. O protocolo CWMP não deverá ser modelado como uma API JSON convencional.
 
+### 7.1 Gerenciamento do projeto Python
+
+O backend utilizará o `uv` para gerenciar a versão do Python, o ambiente virtual e as dependências do projeto.
+
+- o ambiente virtual local será criado em `backend/.venv`;
+- as dependências diretas serão declaradas em `backend/pyproject.toml`;
+- o arquivo `backend/uv.lock` deverá ser versionado;
+- a versão do Python será fixada em `backend/.python-version`;
+- `uv sync` será o comando padrão para criar ou sincronizar o ambiente;
+- `uv add <pacote>` e `uv add --dev <pacote>` serão usados para adicionar dependências;
+- comandos do projeto serão executados com `uv run`, sem exigir ativação manual do ambiente;
+- instalações diretas com `pip` não deverão fazer parte do fluxo normal de desenvolvimento ou do pipeline.
+
+Comandos iniciais:
+
+```bash
+cd backend
+uv sync
+uv run pytest
+uv run ruff check .
+uv run pyright
+```
+
 ## 8. Organização interna sugerida
 
 ```text
 backend/
 ├── AGENTS.md
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── migrations/
 ├── src/
 │   └── acs/
@@ -592,8 +619,6 @@ Uma entrega do backend somente será considerada concluída quando:
 
 ## 21. Decisões pendentes
 
-- versão de Python e política de atualização;
-- ferramenta de gerenciamento e lock de dependências;
 - biblioteca segura de XML/SOAP;
 - versões CWMP e modelos de dados do primeiro MVP;
 - política de autenticação das CPEs;

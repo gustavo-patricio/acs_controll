@@ -1,0 +1,32 @@
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "acs-backend"
+version = "0.1.0"
+description = "Backend for the Huawei CPE Auto-Configuration Server"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[tool.uv.build-backend]
+module-name = "acs"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+typeCheckingMode = "strict"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
+]
