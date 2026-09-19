@@ -22,11 +22,15 @@
 ## Commands
 
 - Install or synchronize: `uv sync`
+- Start PostgreSQL: `docker compose up -d postgres` from the repository root
+- Check the database: `uv run acs-db-check`
+- Run the administrative API: `uv run uvicorn acs.api.app:app --reload`
 - Add a production dependency: `uv add <package>`
 - Add a development dependency: `uv add --dev <package>`
 - Lint: `uv run ruff check .`
 - Format check: `uv run ruff format --check .`
 - Type check: `uv run pyright`
 - Test: `uv run pytest`
+- Database integration tests: `ACS_RUN_INTEGRATION_TESTS=1 uv run pytest -m integration`
 
 Use `uv` for dependency and virtual environment management. Do not install project dependencies directly with `pip`.

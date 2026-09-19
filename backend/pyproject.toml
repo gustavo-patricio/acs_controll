@@ -7,7 +7,17 @@ name = "acs-backend"
 version = "0.1.0"
 description = "Backend for the Huawei CPE Auto-Configuration Server"
 requires-python = ">=3.13,<3.14"
-dependencies = []
+dependencies = [
+    "alembic>=1.19.2",
+    "fastapi>=0.141.1",
+    "psycopg[binary,pool]>=3.3.5",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2.0.52",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+acs-db-check = "acs.infrastructure.database.check:main"
 
 [tool.uv.build-backend]
 module-name = "acs"
@@ -15,6 +25,9 @@ module-name = "acs"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "integration: requires external infrastructure",
+]
 
 [tool.ruff]
 src = ["src", "tests"]
@@ -23,10 +36,14 @@ src = ["src", "tests"]
 include = ["src", "tests"]
 extraPaths = ["src"]
 typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.6",
 ]
