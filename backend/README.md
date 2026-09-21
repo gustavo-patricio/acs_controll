@@ -34,7 +34,37 @@ uv run uvicorn acs.api.app:app --reload
 
 `GET http://127.0.0.1:8000/health` returns `200` and `{"status":"healthy"}` when the API process is serving requests. This liveness endpoint does not check PostgreSQL; use `uv run acs-db-check` for database connectivity.
 
-## Quality checks
+## Development CWMP receiver
+
+From `backend/`, with PostgreSQL running and `.env` configured:
+
+```bash
+uv sync --locked
+uv run alembic upgrade head
+uv run uvicorn acs.cwmp.http.app:app --host 127.0.0.1 --port 7547 --no-access-log
+```
+
+The separate CWMP application serves `POST /cwmp`. It currently accepts only the
+CWMP 1.0 Inform profile. It refuses startup outside development/test or with SQL
+echo enabled. See [CWMP decisions](docs/CWMP_FIRST_DELIVERY.md) for protocol scope,
+session cookies, error behavior and remaining authentication work.
+
+### Swagger UI
+
+- Administrative API: http://127.0.0.1:8000/docs exposes `GET /health`.
+- CWMP receiver: http://127.0.0.1:7547/docs exposes `POST /cwmp`.
+
+Run both commands above in separate terminals to access both applications.
+In the CWMP Swagger UI, expand `POST /cwmp`, select **Try it out**, and execute
+the synthetic `inform` example with `text/xml`. Expect `200` with an XML
+InformResponse. Then clear the request body completely (no spaces, quotes or
+newlines) and execute again within 60 seconds: expect `204` with no body.
+The browser manages the HttpOnly session cookie automatically on the same origin.
+These requests write to the configured database; use only development/test data.
+The minimal example exercises this receiver, not full CPE conformance.
+Swagger UI assets require internet access to the default CDN.
+
+## Validation
 
 ```bash
 uv run ruff check .

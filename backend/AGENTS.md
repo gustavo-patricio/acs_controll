@@ -25,6 +25,8 @@
 - Start PostgreSQL: `docker compose up -d postgres` from the repository root
 - Check the database: `uv run acs-db-check`
 - Run the administrative API: `uv run uvicorn acs.api.app:app --reload`
+- Apply database migrations: `uv run alembic upgrade head`
+- Run the development CWMP receiver: `uv run uvicorn acs.cwmp.http.app:app --port 7547 --no-access-log`
 - Add a production dependency: `uv add <package>`
 - Add a development dependency: `uv add --dev <package>`
 - Lint: `uv run ruff check .`

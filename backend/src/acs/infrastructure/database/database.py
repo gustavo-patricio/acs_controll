@@ -22,6 +22,7 @@ class Database:
         self.engine: AsyncEngine = create_async_engine(
             str(settings.database_url),
             echo=settings.database_echo,
+            hide_parameters=True,
             connect_args={"connect_timeout": settings.database_connect_timeout},
             pool_pre_ping=True,
             pool_size=settings.database_pool_size,

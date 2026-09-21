@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:cwmp="urn:dslforum-org:cwmp-1-0"
+ xmlns:enc="http://schemas.xmlsoap.org/soap/encoding/"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+ <soap:Header><cwmp:ID soap:mustUnderstand="1">lab-inform-001</cwmp:ID></soap:Header>
+ <soap:Body><cwmp:Inform>
+  <DeviceId><Manufacturer>Huawei</Manufacturer><OUI>A1B2C3</OUI><ProductClass>LAB-ONT</ProductClass><SerialNumber>LAB000001</SerialNumber></DeviceId>
+  <Event enc:arrayType="cwmp:EventStruct[2]">
+   <EventStruct><EventCode>0 BOOTSTRAP</EventCode><CommandKey/></EventStruct>
+   <EventStruct><EventCode>1 BOOT</EventCode><CommandKey/></EventStruct>
+  </Event>
+  <MaxEnvelopes>1</MaxEnvelopes>
+  <CurrentTime>2026-09-19T10:00:00-04:00</CurrentTime>
+  <RetryCount>0</RetryCount>
+  <ParameterList enc:arrayType="cwmp:ParameterValueStruct[3]">
+   <ParameterValueStruct><Name>InternetGatewayDevice.DeviceInfo.SoftwareVersion</Name><Value xsi:type="xsd:string">LAB-1.0</Value></ParameterValueStruct>
+   <ParameterValueStruct><Name>InternetGatewayDevice.ManagementServer.Password</Name><Value xsi:type="xsd:string">SYNTHETIC-SECRET-DO-NOT-LOG</Value></ParameterValueStruct>
+   <ParameterValueStruct><Name>InternetGatewayDevice.DeviceInfo.UpTime</Name><Value xsi:type="xsd:unsignedInt">120</Value></ParameterValueStruct>
+  </ParameterList>
+ </cwmp:Inform></soap:Body>
+</soap:Envelope>

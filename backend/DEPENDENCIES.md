@@ -4,6 +4,8 @@ Direct dependencies must have a defined purpose and a license compatible with th
 
 | Dependency | Scope | Purpose | License |
 | --- | --- | --- | --- |
+| defusedxml | Runtime | Reject DTDs, entities and external references when parsing SOAP | PSF-2.0 |
+| types-defusedxml | Development | Static typing for the XML adapter | Apache-2.0 |
 | FastAPI | Runtime | Administrative HTTP API and OpenAPI contract | MIT |
 | Uvicorn | Runtime | ASGI server for the administrative API | BSD-3-Clause |
 | HTTPX | Development | FastAPI HTTP contract tests via TestClient | BSD-3-Clause |

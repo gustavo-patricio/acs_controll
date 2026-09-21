@@ -27,3 +27,13 @@ async def test_health_endpoint_is_in_openapi_contract() -> None:
 
     assert response.status_code == 200
     assert "/health" in response.json()["paths"]
+
+
+@pytest.mark.asyncio
+async def test_administrative_swagger_is_available() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/docs")
+    assert response.status_code == 200
+    assert "SwaggerUIBundle" in response.text

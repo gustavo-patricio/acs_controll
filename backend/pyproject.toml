@@ -9,6 +9,7 @@ description = "Backend for the Huawei CPE Auto-Configuration Server"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.19.2",
+    "defusedxml>=0.7.1",
     "fastapi>=0.141.1",
     "psycopg[binary,pool]>=3.3.5",
     "pydantic-settings>=2.15.0",
@@ -33,7 +34,7 @@ markers = [
 src = ["src", "tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "migrations"]
 extraPaths = ["src"]
 typeCheckingMode = "strict"
 venvPath = "."
@@ -46,4 +47,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.6",
+    "types-defusedxml>=0.7.0.20260504",
 ]
