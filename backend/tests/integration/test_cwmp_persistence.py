@@ -19,16 +19,20 @@ from pydantic import PostgresDsn
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Connection, make_url
 
+from acs.api.app import create_app as create_admin_app
+from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.application.services.inform import InformService
 from acs.cwmp.http.app import create_app
 from acs.cwmp.soap.inform import parse_inform
 from acs.domain.cpe.inform import Event
 from acs.domain.events.session import InvalidSession, StorageUnavailable
 from acs.infrastructure.database.base import Base
+from acs.infrastructure.database.cpe_inventory import PostgresCpeInventoryRepository
 from acs.infrastructure.database.cwmp_models import Cpe, CwmpEvent, CwmpSessionRow
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import PostgresInformRepository
 from acs.settings import get_settings
+from cwmp_simulator import simulate_session
 
 pytestmark = [
     pytest.mark.integration,
@@ -74,6 +78,52 @@ async def cwmp_database() -> AsyncGenerator[Database]:
         async with admin.engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_registered_cpes_are_visible_in_paginated_inventory(
+    cwmp_database: Database,
+    inform_xml: bytes,
+) -> None:
+    inventory = CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database))
+    async with AsyncClient(
+        transport=ASGITransport(app=create_admin_app(inventory)),
+        base_url="http://test",
+    ) as client:
+        assert (await client.get("/api/v1/cpes")).json() == {
+            "items": [],
+            "total": 0,
+            "limit": 50,
+            "offset": 0,
+        }
+        inform = parse_inform(inform_xml)
+        service = InformService(PostgresInformRepository(cwmp_database))
+        await service.receive(inform, None)
+        await service.receive(inform, None)
+        await service.receive(
+            replace(inform, device=replace(inform.device, serial_number="SECOND")), None
+        )
+        first = (await client.get("/api/v1/cpes?limit=1")).json()
+        second = (await client.get("/api/v1/cpes?limit=1&offset=1")).json()
+        assert first["total"] == second["total"] == 2
+        assert first["items"][0]["serial_number"] == "SECOND"
+        assert second["items"][0]["serial_number"] == inform.device.serial_number
+        filtered = (
+            await client.get(
+                "/api/v1/cpes",
+                params={
+                    "manufacturer": inform.device.manufacturer,
+                    "serial_number": inform.device.serial_number,
+                },
+            )
+        ).json()
+        assert filtered["total"] == 1
+        assert filtered["items"][0]["firmware"] == "LAB-1.0"
+        assert (await client.get("/api/v1/cpes?manufacturer=missing")).json()[
+            "total"
+        ] == 0
+        beyond = (await client.get("/api/v1/cpes?offset=100")).json()
+        assert beyond["total"] == 2 and beyond["items"] == []
 
 
 @pytest.mark.asyncio
@@ -159,6 +209,24 @@ async def test_real_http_flow_persists_completion(
     async with cwmp_database.session() as db:
         session = (await db.scalars(select(CwmpSessionRow))).one()
         assert session.state == "completed" and session.completed_at is not None
+        assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 2
+
+
+@pytest.mark.asyncio
+async def test_simulated_cpe_reuses_identity_across_completed_sessions(
+    cwmp_database: Database,
+) -> None:
+    service = InformService(PostgresInformRepository(cwmp_database))
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app(service)), base_url="http://test"
+    ) as client:
+        for _ in range(2):
+            await simulate_session(client, "/cwmp", "SIM-INTEGRATION")
+    async with cwmp_database.session() as db:
+        assert await db.scalar(select(func.count()).select_from(Cpe)) == 1
+        sessions = (await db.scalars(select(CwmpSessionRow))).all()
+        assert len(sessions) == 2
+        assert all(s.state == "completed" and s.completed_at for s in sessions)
         assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 2
 
 

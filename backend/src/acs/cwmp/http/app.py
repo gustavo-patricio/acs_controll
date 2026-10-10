@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from acs.application.services.inform import InformService
 from acs.cwmp.http.openapi import REQUEST_BODY, RESPONSES
@@ -51,6 +52,14 @@ def create_app(service: InformService | None = None) -> FastAPI:
             service = None
 
     app = FastAPI(title="ACS CWMP receiver", lifespan=lifespan, redoc_url=None)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.post(
         "/cwmp",
