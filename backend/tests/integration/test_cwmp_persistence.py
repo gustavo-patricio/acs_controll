@@ -16,7 +16,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from httpx import ASGITransport, AsyncClient
 from pydantic import PostgresDsn
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import Connection, make_url
 
 from acs.api.app import create_app as create_admin_app
@@ -124,6 +124,130 @@ async def test_registered_cpes_are_visible_in_paginated_inventory(
         ] == 0
         beyond = (await client.get("/api/v1/cpes?offset=100")).json()
         assert beyond["total"] == 2 and beyond["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_cpe_detail_and_history_are_scoped_paginated_and_read_only(
+    cwmp_database: Database,
+    inform_xml: bytes,
+) -> None:
+    inform = parse_inform(inform_xml)
+    service = InformService(PostgresInformRepository(cwmp_database))
+    first, cookie = await service.receive(inform, None)
+    await service.finish(cookie)
+    second, _ = await service.receive(inform, None)
+    other, _ = await service.receive(
+        replace(inform, device=replace(inform.device, serial_number="OTHER-CPE")),
+        None,
+    )
+    timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+    empty_id = uuid4()
+    async with cwmp_database.session() as db:
+        # Equal timestamps exercise the deterministic UUID/position tie breakers.
+        await db.execute(
+            update(CwmpSessionRow).values(
+                started_at=timestamp,
+                expires_at=timestamp + timedelta(seconds=60),
+            )
+        )
+        await db.execute(update(CwmpEvent).values(command_key="DO-NOT-EXPOSE"))
+        db.add(
+            Cpe(
+                id=empty_id,
+                manufacturer="Example",
+                oui="A1B2C3",
+                product_class="LAB",
+                serial_number="EMPTY-HISTORY",
+                first_seen=timestamp,
+                last_seen=timestamp,
+            )
+        )
+        await db.commit()
+    inventory = CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database))
+    async with AsyncClient(
+        transport=ASGITransport(app=create_admin_app(inventory)),
+        base_url="http://test",
+    ) as client:
+        path = f"/api/v1/cpes/{first.cpe_id}"
+        detail = await client.get(path)
+        assert detail.status_code == 200
+        data = detail.json()
+        assert data["serial_number"] == inform.device.serial_number
+        assert data["firmware"] == "LAB-1.0" and data["hardware"] is None
+        assert datetime.fromisoformat(data["last_seen"]).tzinfo is not None
+        sessions = (await client.get(path + "/sessions")).json()
+        expected_ids = sorted([str(first.id), str(second.id)])
+        assert sessions["total"] == 2
+        assert [s["id"] for s in sessions["items"]] == expected_ids
+        by_id = {s["id"]: s for s in sessions["items"]}
+        assert by_id[str(first.id)]["state"] == "completed"
+        assert by_id[str(first.id)]["completed_at"] is not None
+        assert by_id[str(second.id)]["state"] == "awaiting_empty"
+        assert by_id[str(second.id)]["completed_at"] is None
+        for offset, session_id in enumerate(expected_ids):
+            page = (
+                await client.get(path + f"/sessions?limit=1&offset={offset}")
+            ).json()
+            assert page["total"] == 2 and page["items"][0]["id"] == session_id
+        event_response = await client.get(path + "/events")
+        events = event_response.json()
+        assert events["total"] == 4
+        assert [(e["session_id"], e["position"]) for e in events["items"]] == [
+            (session_id, position) for session_id in expected_ids for position in (0, 1)
+        ]
+        assert [e["code"] for e in events["items"]] == ["0 BOOTSTRAP", "1 BOOT"] * 2
+        assert all(
+            datetime.fromisoformat(e["received_at"]) == timestamp
+            for e in events["items"]
+        )
+        for offset, event in enumerate(events["items"]):
+            page = (await client.get(path + f"/events?limit=1&offset={offset}")).json()
+            assert page["total"] == 4 and page["items"] == [event]
+        assert "DO-NOT-EXPOSE" not in event_response.text
+        for item in sessions["items"]:
+            assert "token_hash" not in item and "rpc_id" not in item
+        for kind, total in (("sessions", 2), ("events", 4)):
+            beyond = (await client.get(path + f"/{kind}?offset=100")).json()
+            assert beyond["items"] == [] and beyond["total"] == total
+            empty = await client.get(f"/api/v1/cpes/{empty_id}/{kind}")
+            assert empty.status_code == 200
+            assert empty.json() == {"items": [], "total": 0, "limit": 50, "offset": 0}
+        for suffix in ("", "/sessions", "/events"):
+            missing = await client.get(f"/api/v1/cpes/{uuid4()}{suffix}")
+            assert missing.status_code == 404
+            assert missing.json()["detail"]["code"] == "cpe_not_found"
+        other_sessions = (
+            await client.get(f"/api/v1/cpes/{other.cpe_id}/sessions")
+        ).json()
+        assert other_sessions["total"] == 1
+        assert other_sessions["items"][0]["id"] == str(other.id)
+    async with cwmp_database.session() as db:
+        row = await db.get(CwmpSessionRow, second.id)
+        assert (
+            row is not None and row.state == "awaiting_empty"
+        )  # GET does not expire sessions.
+        assert await db.scalar(select(func.count()).select_from(CwmpSessionRow)) == 3
+        assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 6
+
+
+@pytest.mark.asyncio
+async def test_history_database_errors_return_safe_503(cwmp_database: Database) -> None:
+    # Only the fixture's disposable schema is modified, never the lab inventory.
+    async with cwmp_database.engine.begin() as connection:
+        await connection.execute(text("DROP TABLE cpes CASCADE"))
+    inventory = CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database))
+    async with AsyncClient(
+        transport=ASGITransport(app=create_admin_app(inventory)),
+        base_url="http://test",
+    ) as client:
+        for suffix in ("", "/sessions", "/events"):
+            response = await client.get(f"/api/v1/cpes/{uuid4()}{suffix}")
+            assert response.status_code == 503
+            assert response.json()["detail"] == {
+                "code": "inventory_unavailable",
+                "request_id": response.headers["x-request-id"],
+            }
+            assert "SELECT" not in response.text
 
 
 @pytest.mark.asyncio

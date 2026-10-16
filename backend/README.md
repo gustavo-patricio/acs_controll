@@ -71,8 +71,61 @@ authorized lab network. Avoid access logs when querying identifying filters:
 uv run uvicorn acs.api.app:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
-This read-only delivery adds no database columns or migration. Detail/history
-endpoints, additional search/sort options and authentication/RBAC remain future work.
+This read-only delivery adds no database columns or migration. Additional
+search/sort options and authentication/RBAC remain future work.
+
+### CPE details, sessions and events
+
+Use the `id` returned by the inventory, not the serial number. All three routes
+are available in the administrative Swagger UI at http://127.0.0.1:8000/docs.
+They use the same development/test restriction and database as the inventory.
+
+```bash
+# Replace with an id from GET /api/v1/cpes.
+CPE_ID='00000000-0000-0000-0000-000000000000'
+curl "http://127.0.0.1:8000/api/v1/cpes/$CPE_ID"
+curl "http://127.0.0.1:8000/api/v1/cpes/$CPE_ID/sessions?limit=50&offset=0"
+curl "http://127.0.0.1:8000/api/v1/cpes/$CPE_ID/events?limit=50&offset=0"
+```
+
+- Detail returns the same public device fields as a list item, without a page
+  wrapper. Missing model/version data remains `null`; no new CPE RPC is sent.
+- Sessions return `items`, `total`, `limit`, `offset`. Each item contains `id`,
+  `cpe_id`, `version`, `state`, `started_at`, `expires_at`, `completed_at`.
+  Order is `started_at` descending, then session `id` ascending.
+- Events use the same page wrapper. Each item contains `session_id`, `position`
+  (zero-based position within the Inform), `code`, `received_at`. Order is session
+  `started_at` descending, session `id` ascending, then `position` ascending.
+  `received_at` is the ACS session start timestamp, not the event occurrence time
+  on the CPE; the database does not store an independent event timestamp.
+- Both histories accept `limit` 1-100 (default 50) and `offset` >= 0 (default 0).
+  Count, parent existence and items are read from one snapshot per request.
+- A known CPE with no history, or a page beyond the end, returns `200` and an empty
+  `items` list (the total still counts all matching records).
+- An unknown UUID returns `404` with `detail.code=cpe_not_found`. Database/service
+  unavailability returns `503` with `detail.code=inventory_unavailable`. These
+  errors carry a correlated `detail.request_id` and `X-Request-ID`. Malformed
+  UUIDs and invalid pagination return the standard FastAPI `422` validation error.
+
+Reads do not change sessions: `awaiting_empty` may already be expired, and
+`completed` does not imply that the CPE is currently online. Tokens, token hashes,
+RPC IDs, command keys, raw SOAP and parameter values are not exposed. No migration
+is needed because these routes only read existing tables.
+
+The new HTTP response contracts use Pydantic models; application records remain
+plain dataclasses. This is the backend portion of RF-028/RF-035 and part of RF-036,
+plus session/event visibility from the roadmap. It does not complete the UI,
+authentication, online/offline classification, IP inventory or remote refresh.
+
+Validate the HTTP contracts and PostgreSQL behavior from `backend/`:
+
+```bash
+uv run pytest tests/contract/test_cpes.py -v
+ACS_RUN_INTEGRATION_TESTS=1 uv run pytest tests/integration/test_cwmp_persistence.py -v
+```
+
+PostgreSQL tests migrate and remove only disposable `test_cwmp_*` schemas, leaving
+the real lab inventory untouched. No real CPE connection is needed for these tests.
 
 ## Development CWMP receiver
 
@@ -91,7 +144,8 @@ session cookies, error behavior and remaining authentication work.
 
 ### Swagger UI
 
-- Administrative API: http://127.0.0.1:8000/docs exposes `GET /health` and `GET /api/v1/cpes`.
+- Administrative API: http://127.0.0.1:8000/docs exposes `GET /health`, the CPE list,
+  individual details, sessions and events.
 - CWMP receiver: http://127.0.0.1:7547/docs exposes `POST /cwmp`.
 
 Run both commands above in separate terminals to access both applications.

@@ -1,20 +1,129 @@
 """PostgreSQL inventory queries with explicit field mapping."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from acs.application.services.cpe_inventory import (
+    CpeNotFound,
     CpePage,
     CpeSummary,
+    EventPage,
+    EventSummary,
     InventoryUnavailable,
+    SessionPage,
+    SessionSummary,
 )
-from acs.infrastructure.database.cwmp_models import Cpe
+from acs.infrastructure.database.cwmp_models import Cpe, CwmpEvent, CwmpSessionRow
 from acs.infrastructure.database.database import Database
 
 
 class PostgresCpeInventoryRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    @staticmethod
+    def _summary(row: Cpe) -> CpeSummary:
+        return CpeSummary(
+            id=row.id,
+            manufacturer=row.manufacturer,
+            oui=row.oui,
+            product_class=row.product_class,
+            serial_number=row.serial_number,
+            model=row.model,
+            firmware=row.firmware,
+            hardware=row.hardware,
+            first_seen=row.first_seen,
+            last_seen=row.last_seen,
+        )
+
+    @asynccontextmanager
+    async def _cpe_snapshot(self, cpe_id: UUID) -> AsyncGenerator[AsyncSession]:
+        try:
+            async with self.database.session() as session:
+                await session.connection(
+                    execution_options={"isolation_level": "REPEATABLE READ"}
+                )
+                if await session.scalar(select(Cpe.id).where(Cpe.id == cpe_id)) is None:
+                    raise CpeNotFound
+                yield session
+        except SQLAlchemyError:
+            raise InventoryUnavailable from None
+
+    async def get_cpe(self, cpe_id: UUID) -> CpeSummary:
+        async with self._cpe_snapshot(cpe_id) as session:
+            row = (await session.scalars(select(Cpe).where(Cpe.id == cpe_id))).one()
+            return self._summary(row)
+
+    async def list_sessions(self, cpe_id: UUID, limit: int, offset: int) -> SessionPage:
+        async with self._cpe_snapshot(cpe_id) as session:
+            total = await session.scalar(
+                select(func.count())
+                .select_from(CwmpSessionRow)
+                .where(CwmpSessionRow.cpe_id == cpe_id)
+            )
+            # Select only public fields; never fetch the session token for this view.
+            rows = (
+                await session.execute(
+                    select(
+                        CwmpSessionRow.id,
+                        CwmpSessionRow.cpe_id,
+                        CwmpSessionRow.version,
+                        CwmpSessionRow.state,
+                        CwmpSessionRow.started_at,
+                        CwmpSessionRow.expires_at,
+                        CwmpSessionRow.completed_at,
+                    )
+                    .where(CwmpSessionRow.cpe_id == cpe_id)
+                    .order_by(CwmpSessionRow.started_at.desc(), CwmpSessionRow.id)
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+            return SessionPage(
+                items=tuple(SessionSummary(*row) for row in rows),
+                total=total or 0,
+                limit=limit,
+                offset=offset,
+            )
+
+    async def list_events(self, cpe_id: UUID, limit: int, offset: int) -> EventPage:
+        async with self._cpe_snapshot(cpe_id) as session:
+            total = await session.scalar(
+                select(func.count())
+                .select_from(CwmpEvent)
+                .join(CwmpSessionRow, CwmpSessionRow.id == CwmpEvent.session_id)
+                .where(CwmpSessionRow.cpe_id == cpe_id)
+            )
+            rows = (
+                await session.execute(
+                    select(
+                        CwmpEvent.session_id,
+                        CwmpEvent.position,
+                        CwmpEvent.code,
+                        CwmpSessionRow.started_at,
+                    )
+                    .join(CwmpSessionRow, CwmpSessionRow.id == CwmpEvent.session_id)
+                    .where(CwmpSessionRow.cpe_id == cpe_id)
+                    .order_by(
+                        CwmpSessionRow.started_at.desc(),
+                        CwmpSessionRow.id,
+                        CwmpEvent.position,
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+            return EventPage(
+                items=tuple(EventSummary(*row) for row in rows),
+                total=total or 0,
+                limit=limit,
+                offset=offset,
+            )
 
     async def list_cpes(
         self,
@@ -46,21 +155,7 @@ class PostgresCpeInventoryRepository:
                     )
                 ).all()
                 return CpePage(
-                    items=tuple(
-                        CpeSummary(
-                            id=row.id,
-                            manufacturer=row.manufacturer,
-                            oui=row.oui,
-                            product_class=row.product_class,
-                            serial_number=row.serial_number,
-                            model=row.model,
-                            firmware=row.firmware,
-                            hardware=row.hardware,
-                            first_seen=row.first_seen,
-                            last_seen=row.last_seen,
-                        )
-                        for row in rows
-                    ),
+                    items=tuple(self._summary(row) for row in rows),
                     total=total or 0,
                     limit=limit,
                     offset=offset,
