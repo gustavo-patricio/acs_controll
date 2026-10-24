@@ -4,11 +4,10 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport
 from pydantic import PostgresDsn
 
 from acs.api import app as app_module
-from acs.api.app import create_app
 from acs.application.services.cpe_inventory import (
     CpeInventoryService,
     CpeNotFound,
@@ -21,6 +20,9 @@ from acs.application.services.cpe_inventory import (
     SessionSummary,
 )
 from acs.settings import Settings
+from auth_support import ADMIN
+from auth_support import admin_app as create_app
+from auth_support import authorized_client as AsyncClient
 
 
 class InventoryStub:
@@ -105,7 +107,7 @@ async def test_inventory_response_and_openapi() -> None:
         assert response.headers["x-request-id"]
         schema = (await client.get("/openapi.json")).json()
         operation = schema["paths"]["/api/v1/cpes"]["get"]
-        assert set(operation["responses"]) == {"200", "422", "503"}
+        assert set(operation["responses"]) == {"200", "401", "403", "422", "503"}
         assert {p["name"] for p in operation["parameters"]} == {
             "limit",
             "offset",
@@ -234,7 +236,14 @@ async def test_detail_and_history_contracts() -> None:
         schema = (await client.get("/openapi.json")).json()
         for suffix in ("", "/sessions", "/events"):
             operation = schema["paths"]["/api/v1/cpes/{cpe_id}" + suffix]["get"]
-            assert set(operation["responses"]) == {"200", "404", "422", "503"}
+            assert set(operation["responses"]) == {
+                "200",
+                "401",
+                "403",
+                "404",
+                "422",
+                "503",
+            }
             names = {p["name"] for p in operation["parameters"]}
             assert names == ({"cpe_id", "limit", "offset"} if suffix else {"cpe_id"})
 
@@ -303,7 +312,7 @@ async def test_invalid_history_pagination(kind: str, query: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["sessions", "events"])
 async def test_history_service_rejects_invalid_pagination(kind: str) -> None:
-    service = CpeInventoryService(InventoryStub())
+    service = CpeInventoryService(InventoryStub(), ADMIN)
     method = service.list_sessions if kind == "sessions" else service.list_events
     with pytest.raises(ValueError, match="Invalid pagination"):
         await method(uuid4(), limit=101)

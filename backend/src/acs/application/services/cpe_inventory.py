@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from acs.domain.security import AccessDenied, Principal
+
 
 class InventoryUnavailable(Exception):
     """Inventory cannot currently be read."""
@@ -90,21 +92,35 @@ class CpeInventoryRepository(Protocol):
 
 
 class CpeInventoryService:
-    def __init__(self, repository: CpeInventoryRepository) -> None:
+    def __init__(
+        self, repository: CpeInventoryRepository, principal: Principal | None = None
+    ) -> None:
         self.repository = repository
+        self.principal = principal
+
+    def for_principal(self, principal: Principal) -> "CpeInventoryService":
+        return CpeInventoryService(self.repository, principal)
+
+    def _authorize(self) -> None:
+        if self.principal is None:
+            raise AccessDenied
+        self.principal.require("inventory:read")
 
     async def get_cpe(self, cpe_id: UUID) -> CpeSummary:
+        self._authorize()
         return await self.repository.get_cpe(cpe_id)
 
     async def list_sessions(
         self, cpe_id: UUID, limit: int = 50, offset: int = 0
     ) -> SessionPage:
+        self._authorize()
         self._validate_pagination(limit, offset)
         return await self.repository.list_sessions(cpe_id, limit, offset)
 
     async def list_events(
         self, cpe_id: UUID, limit: int = 50, offset: int = 0
     ) -> EventPage:
+        self._authorize()
         self._validate_pagination(limit, offset)
         return await self.repository.list_events(cpe_id, limit, offset)
 
@@ -120,6 +136,7 @@ class CpeInventoryService:
         manufacturer: str | None = None,
         serial_number: str | None = None,
     ) -> CpePage:
+        self._authorize()
         self._validate_pagination(limit, offset)
         return await self.repository.list_cpes(
             limit, offset, manufacturer, serial_number

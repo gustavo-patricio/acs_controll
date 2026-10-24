@@ -5,9 +5,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, Request, Response
+from fastapi.security.http import HTTPBase
 
+from acs.application.services.authentication import Authenticator
 from acs.application.services.inform import InformService
 from acs.cwmp.http.openapi import REQUEST_BODY, RESPONSES
 from acs.cwmp.soap.inform import (
@@ -19,18 +20,27 @@ from acs.cwmp.soap.inform import (
     serialize_inform_response,
 )
 from acs.domain.events.session import InvalidSession, StorageUnavailable
+from acs.domain.security import (
+    AccessDenied,
+    AuthenticationFailed,
+    AuthenticationUnavailable,
+)
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import PostgresInformRepository
 from acs.infrastructure.observability.cwmp import configure_logging, record
+from acs.infrastructure.security.authentication import PostgresAuthenticator
+from acs.infrastructure.security.http import InsecureTransport, authenticate_request
 from acs.settings import get_settings
 
 COOKIE = "acs_cwmp_session"
 
 
-def create_app(service: InformService | None = None) -> FastAPI:
+def create_app(
+    service: InformService | None = None, authenticator: Authenticator | None = None
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-        nonlocal service
+        nonlocal service, authenticator
         if service is not None:
             yield
             return
@@ -45,21 +55,17 @@ def create_app(service: InformService | None = None) -> FastAPI:
         configure_logging()
         database = Database(settings)
         service = InformService(PostgresInformRepository(database))
+        authenticator = PostgresAuthenticator(
+            database, allow_shared_cpe=settings.cwmp_allow_shared_credentials
+        )
         try:
             yield
         finally:
             await database.close()
             service = None
+            authenticator = None
 
     app = FastAPI(title="ACS CWMP receiver", lifespan=lifespan, redoc_url=None)
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.post(
         "/cwmp",
@@ -75,6 +81,9 @@ def create_app(service: InformService | None = None) -> FastAPI:
         ),
         openapi_extra={"requestBody": REQUEST_BODY},
         responses=RESPONSES,
+        dependencies=[
+            Depends(HTTPBase(scheme="basic", auto_error=False, scheme_name="CpeBasic"))
+        ],
     )
     async def cwmp(request: Request) -> Response:
         request_id = uuid4()
@@ -85,6 +94,15 @@ def create_app(service: InformService | None = None) -> FastAPI:
             return Response(status_code=status, headers=headers)
 
         if service is None:
+            return error(503)
+        try:
+            principal = await authenticate_request(request, authenticator, "cpe")
+        except InsecureTransport:
+            return error(403)
+        except AuthenticationFailed:
+            headers["WWW-Authenticate"] = 'Basic realm="acs-cpe", charset="UTF-8"'
+            return error(401)
+        except AuthenticationUnavailable:
             return error(503)
         if request.headers.get("content-encoding", "identity").lower() != "identity":
             return error(415)
@@ -108,7 +126,7 @@ def create_app(service: InformService | None = None) -> FastAPI:
         cookie = request.cookies.get(COOKIE)
         try:
             if not body:
-                session = await service.finish(cookie)
+                session = await service.finish(cookie, principal=principal)
                 response = Response(status_code=204, headers=headers)
                 response.delete_cookie(COOKIE, path="/cwmp")
                 record("session_completed", request_id, 204, session)
@@ -119,7 +137,7 @@ def create_app(service: InformService | None = None) -> FastAPI:
             ):
                 return error(415)
             inform = parse_inform(bytes(body))
-            session, token = await service.receive(inform, cookie)
+            session, token = await service.receive(inform, cookie, principal=principal)
             response = Response(
                 serialize_inform_response(inform.rpc_id),
                 media_type="text/xml",
@@ -147,6 +165,8 @@ def create_app(service: InformService | None = None) -> FastAPI:
             )
         except InvalidSession:
             return error(400)
+        except AccessDenied:
+            return error(403)
         except StorageUnavailable:
             return error(503)
 

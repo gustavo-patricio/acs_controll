@@ -37,6 +37,10 @@ REQUEST_BODY = {
 }
 
 RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"description": "HTTP Basic credentials required (acs-cpe realm)."},
+    403: {
+        "description": "HTTPS required or credentials do not match the Inform identity."
+    },
     200: {
         "description": "SOAP InformResponse with MaxEnvelopes=1; sets session cookie.",
         "content": {"text/xml": {"schema": {"type": "string"}}},

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     database_connect_timeout: int = Field(default=5, ge=1)
     database_pool_size: int = Field(default=5, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
+    cwmp_allow_shared_credentials: bool = False
 
 
 @lru_cache

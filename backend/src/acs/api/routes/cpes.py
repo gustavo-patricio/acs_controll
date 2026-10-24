@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from acs.api.schemas.cpes import CpeResponse, EventListResponse, SessionListResponse
@@ -15,6 +15,7 @@ from acs.application.services.cpe_inventory import (
     CpePage,
     InventoryUnavailable,
 )
+from acs.infrastructure.observability.security import record
 
 
 class InventoryErrorDetail(BaseModel):
@@ -37,8 +38,15 @@ def inventory_request(
         if service is None:
             raise InventoryUnavailable
         yield service
+        record(
+            "inventory_read",
+            request_id,
+            200,
+            service.principal.id if service.principal else None,
+        )
     except (CpeNotFound, InventoryUnavailable) as exc:
         missing = isinstance(exc, CpeNotFound)
+        record("inventory_read_failed", request_id, 404 if missing else 503)
         raise HTTPException(
             status_code=404 if missing else 503,
             detail={
@@ -50,16 +58,26 @@ def inventory_request(
 
 
 def create_router(
-    get_service: Callable[[], Awaitable[CpeInventoryService | None]],
+    get_service: Callable[[Request], Awaitable[CpeInventoryService | None]],
 ) -> APIRouter:
-    router = APIRouter(prefix="/api/v1", tags=["cpes"])
+    router = APIRouter(
+        prefix="/api/v1",
+        tags=["cpes"],
+        responses={
+            401: {"model": InventoryError, "description": "Authentication required"},
+            403: {
+                "model": InventoryError,
+                "description": "Permission denied or HTTPS required",
+            },
+        },
+    )
 
     @router.get(
         "/cpes",
         response_model=CpePage,
         summary="List registered CPEs",
         description=(
-            "Development/test only until administrative authentication is implemented. "
+            "Development/test only. Requires HTTPS and inventory:read permission. "
             "Exact, case-sensitive filters are combined with AND. "
             "Ordered by last_seen descending, then id ascending. "
             "last_seen is the last accepted Inform, not proof the CPE is online."

@@ -8,16 +8,19 @@ from datetime import datetime
 from uuid import uuid4
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, BasicAuth
 from pydantic import PostgresDsn
 
 from acs.application.services.inform import InformService
 from acs.cwmp.http import app as cwmp_module
-from acs.cwmp.http.app import COOKIE, create_app
+from acs.cwmp.http.app import COOKIE
 from acs.cwmp.http.openapi import INFORM_EXAMPLE
 from acs.domain.cpe.inform import Inform
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
 from acs.settings import Settings
+from auth_support import PASSWORD
+from auth_support import authorized_client as AsyncClient
+from auth_support import cwmp_app as create_app
 
 
 class MemoryRepository:
@@ -76,6 +79,8 @@ async def test_swagger_contract_and_documented_session_flow() -> None:
             "200",
             "204",
             "400",
+            "401",
+            "403",
             "408",
             "413",
             "415",
@@ -86,6 +91,7 @@ async def test_swagger_contract_and_documented_session_flow() -> None:
             "/cwmp",
             content=examples["inform"]["value"],
             headers={"Content-Type": "text/xml"},
+            auth=BasicAuth("swagger", PASSWORD),
         )
         assert response.status_code == 200
         assert "InformResponse" in response.text
@@ -94,6 +100,7 @@ async def test_swagger_contract_and_documented_session_flow() -> None:
             "/cwmp",
             content=examples["empty"]["value"],
             headers={"Content-Type": "text/xml"},
+            auth=BasicAuth("swagger", PASSWORD),
         )
         assert response.status_code == 204
         assert response.content == b""
@@ -112,7 +119,7 @@ async def test_inform_then_empty_post(
         response = await client.post(
             "/cwmp",
             content=inform_xml,
-            headers={"Content-Type": "text/xml", "Authorization": "sensitive-auth"},
+            headers={"Content-Type": "text/xml"},
         )
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/xml")

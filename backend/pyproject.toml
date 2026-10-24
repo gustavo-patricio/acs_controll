@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 acs-db-check = "acs.infrastructure.database.check:main"
+acs-account = "acs.infrastructure.security.accounts:main"
 
 [tool.uv.build-backend]
 module-name = "acs"

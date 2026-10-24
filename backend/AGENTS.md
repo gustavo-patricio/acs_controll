@@ -26,6 +26,7 @@
 - Check the database: `uv run acs-db-check`
 - Run the administrative API: `uv run uvicorn acs.api.app:app --reload`
 - Apply database migrations: `uv run alembic upgrade head`
+- Bootstrap local authentication: `uv run acs-account create admin USERNAME --role support` (interactive password; see `docs/AUTHENTICATION.md` for trusted TLS and CPE enrollment)
 - Run the development CWMP receiver: `uv run uvicorn acs.cwmp.http.app:app --port 7547 --no-access-log`
 - Add a production dependency: `uv add <package>`
 - Add a development dependency: `uv add --dev <package>`

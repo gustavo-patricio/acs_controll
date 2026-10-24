@@ -5,11 +5,13 @@ import asyncio
 from alembic import context
 from sqlalchemy.engine import Connection
 
+from acs.infrastructure.database.auth_models import AuthAccount
 from acs.infrastructure.database.cwmp_models import Cpe
 from acs.infrastructure.database.database import Database
 from acs.settings import get_settings
 
-# Importing the models registers all three tables in their shared metadata.
+# Import both model modules to register protocol and authentication tables.
+assert AuthAccount.metadata is Cpe.metadata
 target_metadata = Cpe.metadata
 
 

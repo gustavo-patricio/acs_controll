@@ -1,5 +1,9 @@
 # First CWMP vertical delivery
 
+As decisões de protocolo abaixo descrevem a entrega original do Inform. A configuração
+HTTP anônima foi substituída pela [identificação autenticada](AUTHENTICATION.md):
+agora são exigidos HTTPS e credenciais previamente cadastradas. Nenhum RPC adicional foi incluído.
+
 ## Scope and normative references
 
 This is a development implementation of Inform/InformResponse and empty HTTP
