@@ -2,6 +2,13 @@
 
 ## Atualização de autenticação
 
+Para criar e excluir credenciais CPE pelo Swagger, habilite
+`ACS_ENABLE_TEST_CPE_ACCOUNTS=true` no `.env`, reinicie a API e autentique-se
+com uma conta `administrator`. As rotas temporárias são
+`POST /api/v1/test-cpe-accounts` e `DELETE /api/v1/test-cpe-accounts/{account_id}`.
+Veja [API temporária de contas CPE](docs/AUTHENTICATION.md#api-temporária-de-contas-cpe).
+Para fechar essas rotas, desabilite a opção e reinicie a API.
+
 Para usar o mesmo usuário e senha ACS em várias CPEs provisionadas pelo IXC,
 consulte [credencial compartilhada para IXC e bancada](docs/AUTHENTICATION.md#credencial-compartilhada-para-ixc-e-bancada).
 Esse modo exige uma conta criada com `--shared` e a configuração

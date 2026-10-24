@@ -7,15 +7,18 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security.http import HTTPBase
 
+from acs.api.routes.cpe_accounts import create_router as create_accounts_router
 from acs.api.routes.cpes import create_router
 from acs.api.routes.health import router as health_router
 from acs.application.services.authentication import Authenticator
+from acs.application.services.cpe_accounts import CpeAccountService
 from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.domain.security import (
     AccessDenied,
     AuthenticationFailed,
     AuthenticationUnavailable,
 )
+from acs.infrastructure.database.cpe_accounts import PostgresCpeAccountRepository
 from acs.infrastructure.database.cpe_inventory import PostgresCpeInventoryRepository
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.observability.security import configure_logging, record
@@ -27,10 +30,18 @@ from acs.settings import get_settings
 def create_app(
     inventory: CpeInventoryService | None = None,
     authenticator: Authenticator | None = None,
+    accounts: CpeAccountService | None = None,
 ) -> FastAPI:
+    settings = get_settings()
+    accounts_enabled = (
+        settings.enable_test_cpe_accounts
+        and settings.environment in ("development", "test")
+        and not settings.database_echo
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-        nonlocal inventory, authenticator
+        nonlocal inventory, authenticator, accounts
         if inventory is not None:
             yield
             return
@@ -46,11 +57,14 @@ def create_app(
         configure_logging()
         inventory = CpeInventoryService(PostgresCpeInventoryRepository(database))
         authenticator = PostgresAuthenticator(database)
+        if accounts_enabled:
+            accounts = CpeAccountService(PostgresCpeAccountRepository(database))
         try:
             yield
         finally:
             inventory = None
             authenticator = None
+            accounts = None
             await database.close()
 
     async def get_inventory(request: Request) -> CpeInventoryService | None:
@@ -83,6 +97,10 @@ def create_app(
     # Async dependency avoids a threadpool hop for this in-memory lookup.
     application = FastAPI(title="ACS Administrative API", lifespan=lifespan)
     application.include_router(health_router)
+    if accounts_enabled:
+        application.include_router(
+            create_accounts_router(lambda: accounts, lambda: authenticator)
+        )
     application.include_router(
         create_router(get_inventory),
         dependencies=[

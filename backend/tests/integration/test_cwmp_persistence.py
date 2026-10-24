@@ -22,6 +22,7 @@ from pydantic import PostgresDsn
 from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import Connection, make_url
 
+import acs.api.app as api_module
 from acs.api.app import create_app as real_admin_app
 from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.application.services.inform import InformService
@@ -90,6 +91,126 @@ async def cwmp_database() -> AsyncGenerator[Database]:
         async with admin.engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [False, True])
+async def test_temporary_cpe_account_http_lifecycle(
+    cwmp_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    shared: bool,
+    inform_xml: bytes,
+) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "environment": "test",
+            "enable_test_cpe_accounts": True,
+            "database_url": PostgresDsn(
+                cwmp_database.engine.url.render_as_string(hide_password=False)
+            ),
+        }
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    administrator = AuthAccount(
+        id=uuid4(),
+        kind="admin",
+        username="manager",
+        role="administrator",
+        password_hash=hash_password(PASSWORD),
+        enabled=True,
+    )
+    support = AuthAccount(
+        id=uuid4(),
+        kind="admin",
+        username="support",
+        role="support",
+        password_hash=hash_password(PASSWORD),
+        enabled=True,
+    )
+    async with cwmp_database.session() as db:
+        db.add_all([administrator, support])
+        await db.commit()
+    app = real_admin_app()
+    path = "/api/v1/test-cpe-accounts"
+    payload: dict[str, object] = {
+        "username": "http-device",
+        "password": PASSWORD,
+        "shared": shared,
+    }
+    if not shared:
+        payload.update(oui="a1b2c3", product_class="LAB-ONT", serial_number="LAB000001")
+    async with (
+        app.router.lifespan_context(app),
+        RealClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+        ) as client,
+    ):
+        schema = (await client.get("/openapi.json")).json()
+        assert path in schema["paths"]
+        assert (await client.post(path, json=payload)).status_code == 401
+        assert (
+            await client.post(path, json=payload, auth=("support", PASSWORD))
+        ).status_code == 403
+        assert (
+            await client.post(
+                "http://test" + path, json=payload, auth=("manager", PASSWORD)
+            )
+        ).status_code == 403
+        response = await client.post(path, json=payload, auth=("manager", PASSWORD))
+        assert response.status_code == 201
+        identifier = response.json()["id"]
+        assert PASSWORD not in response.text and "password" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert (
+            await client.post(path, json=payload, auth=("manager", PASSWORD))
+        ).status_code == 409
+        for invalid in (
+            {**payload, "password": "short"},
+            {**payload, "password": {"secret": PASSWORD}},
+            {**payload, "role": "administrator"},
+            {**payload, "shared": True, "oui": "A1B2C3"},
+        ):
+            rejected = await client.post(path, json=invalid, auth=("manager", PASSWORD))
+            assert rejected.status_code == 422
+            assert PASSWORD not in rejected.text
+        authenticator = PostgresAuthenticator(cwmp_database, allow_shared_cpe=True)
+        principal = await authenticator.authenticate("http-device", PASSWORD, "cpe")
+        assert principal.shared_cpe == shared
+        await InformService(PostgresInformRepository(cwmp_database)).receive(
+            parse_inform(inform_xml),
+            None,
+            principal=principal,
+        )
+        with pytest.raises(AuthenticationFailed):
+            await authenticator.authenticate("http-device", PASSWORD, "admin")
+        target = f"{path}/{identifier}"
+        assert (await client.delete(target)).status_code == 401
+        assert (
+            await client.delete(target, auth=("support", PASSWORD))
+        ).status_code == 403
+        assert (
+            await client.delete(
+                f"{path}/{administrator.id}", auth=("manager", PASSWORD)
+            )
+        ).status_code == 404
+        assert (
+            await client.delete(target, auth=("manager", PASSWORD))
+        ).status_code == 204
+        assert (
+            await client.delete(target, auth=("manager", PASSWORD))
+        ).status_code == 404
+        with pytest.raises(AuthenticationFailed):
+            await authenticator.authenticate("http-device", PASSWORD, "cpe")
+        assert (
+            await authenticator.authenticate("manager", PASSWORD, "admin")
+        ).id == administrator.id
+        async with cwmp_database.session() as db:
+            assert await db.scalar(select(func.count()).select_from(Cpe)) == 1
+            assert (
+                await db.scalar(select(func.count()).select_from(CwmpSessionRow)) == 1
+            )
+            assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 2
 
 
 @pytest.mark.asyncio

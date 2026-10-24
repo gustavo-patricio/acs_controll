@@ -39,10 +39,10 @@ ACS já possa ser exposto publicamente.
   Possuir o cookie de outra conta não basta para continuar sua sessão. Os cookies
   continuam com HttpOnly e Secure sobre HTTPS. Sessões anônimas existentes não
   podem ser continuadas; elas permanecem como registros históricos.
-- Os papéis administrativos `administrator` e `support` concedem, nesta etapa,
-  somente `inventory:read`. O papel `pending` não concede acesso. Esses papéis
-  ainda não autorizam alterações de configuração nem endpoints HTTP de gestão
-  de contas. Cada caso de uso do inventário verifica a permissão; um serviço sem
+- Os papéis administrativos `administrator` e `support` concedem `inventory:read`.
+  Somente `administrator` também concede `cpe_accounts:write`, utilizada pelas
+  rotas temporárias de contas CPE quando habilitadas. O papel `pending` não
+  concede acesso. Cada caso de uso do inventário verifica a permissão; um serviço sem
   identidade autenticada vinculada nega o acesso.
 - Contas desativadas são rejeitadas nas próximas requisições. A troca de senha
   entra em vigor na próxima requisição e preserva o UUID da conta. Uma sessão
@@ -78,11 +78,65 @@ uv run acs-account rotate admin lab-reader
 uv run acs-account disable admin lab-reader
 ```
 
-A troca de senha não reativa uma conta desativada. Ainda não existem endpoints
-públicos para cadastro, exclusão, ativação ou alteração de papel de uma conta.
+A troca de senha não reativa uma conta desativada. O cadastro e a exclusão de
+contas CPE também estão disponíveis nas rotas temporárias descritas abaixo.
+Ativação, alteração de papel e cadastro de administradores continuam fora da API.
 Esses comandos locais são privilegiados: restrinja o acesso ao sistema operacional
 e ao banco. A saída contém apenas ação, UUID da conta e categoria; ela ainda não
 constitui uma trilha persistente de auditoria administrativa.
+
+## API temporária de contas CPE
+
+Em `backend/.env`, habilite `ACS_ENABLE_TEST_CPE_ACCOUNTS=true` e reinicie a API
+administrativa. O padrão é `false`. As rotas só são registradas em
+`development`/`test`, com SQL echo desabilitado. Quando desabilitadas, retornam
+`404` e não aparecem no Swagger. Para fechar o acesso posteriormente, volte a
+opção para `false` e reinicie a API; as contas cadastradas permanecem válidas.
+
+Crie um administrador, se ainda não houver um:
+
+```bash
+uv run acs-account create admin lab-admin --role administrator
+```
+
+Abra `https://127.0.0.1:8000/docs` e use **Authorize** com essa conta administrativa.
+Contas CPE e administradores com papel `support` não podem gerenciar credenciais.
+HTTPS é obrigatório.
+
+- `POST /api/v1/test-cpe-accounts`: cria uma credencial CPE, retornando `201`
+  com `id`, `username` e `shared`. Senhas e hashes nunca são retornados.
+- `DELETE /api/v1/test-cpe-accounts/{account_id}`: exclui uma credencial CPE
+  pelo UUID retornado no cadastro e responde `204`. Conta inexistente ou UUID
+  de administrador retorna `404`. Não há exclusão de contas administrativas.
+
+Exemplo de corpo para um perfil compartilhado (substitua a senha ilustrativa):
+
+```json
+{
+  "username": "cpe_teste_02",
+  "password": "SUBSTITUA-POR-UMA-SENHA-UNICA",
+  "shared": true
+}
+```
+
+Para conta individual, use `shared: false` e informe `oui`, `product_class` e
+`serial_number`. OUI aceita seis dígitos hexadecimais e é normalizado para
+maiúsculas. Perfis compartilhados não aceitam campos de identidade. A senha
+exige pelo menos 14 caracteres, no máximo 1024 bytes UTF-8 e nenhum caractere
+de controle. Usuário ou identidade duplicados retornam `409`, sem sobrescrever
+a conta. Dados inválidos retornam `422`, sem reproduzir o conteúdo enviado.
+
+Excluir a conta revoga as próximas autenticações, inclusive o POST vazio de uma
+sessão CWMP aberta. Requisições já autenticadas podem terminar. O inventário,
+as sessões e os eventos históricos são preservados. Para contas compartilhadas,
+a exclusão afeta todas as CPEs que usam essa credencial.
+
+As rotas podem excluir qualquer conta da categoria `cpe` desse banco, inclusive
+as criadas pela CLI; não há uma classificação separada de contas de teste.
+Use somente no banco de laboratório. Os logs registram ação, administrador e
+correlação da requisição sem registrar a senha. A auditoria persistente permanece
+pendente. Nenhuma migration é necessária: as rotas usam a tabela `auth_accounts`
+existente.
 
 ## Credencial compartilhada para IXC e bancada
 
