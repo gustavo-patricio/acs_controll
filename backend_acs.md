@@ -382,7 +382,9 @@ Cada operação deverá registrar:
 - datas de início e conclusão;
 - trilha de auditoria.
 
-## 13. Compatibilidade Huawei
+## 13. Compatibilidade entre fabricantes e modelos
+
+Huawei permanece como fabricante inicial de homologação. A arquitetura deverá permitir adicionar outras marcas sem alterar o contrato comum consumido pela interface de gestão. A existência de um perfil genérico não significa que um fabricante, modelo ou firmware esteja homologado.
 
 A compatibilidade não deverá ser implementada por condicionais espalhadas pelo sistema. Deverá existir uma camada de adaptadores ou perfis selecionados por fabricante, OUI, produto, modelo e versão de firmware.
 
@@ -407,6 +409,83 @@ Os modelos Huawei já observados deverão iniciar a matriz de homologação, sem
 - EG8245H;
 - HG8121H;
 - V166a-20.
+
+### 13.1 Plano de normalização do inventário
+
+**Estado: planejado.** Atualmente, o receptor processa `Inform`/`InformResponse` e a continuação vazia da sessão. A extração de modelo, firmware e hardware está no repositório de persistência, com suporte aos caminhos básicos sob `Device` e `InternetGatewayDevice`. Ainda não há seleção de perfis, catálogo de capacidades ou extensões estruturadas na API.
+
+O objetivo é oferecer uma interface de gestão única, com informações comuns a todas as CPEs e seções específicas conforme o equipamento e o suporte homologado pelo ACS.
+
+```mermaid
+flowchart TD
+    CPE[Parâmetros enviados pela CPE] --> Parser[Parser CWMP]
+    Parser --> Perfil[Seleção do perfil de compatibilidade]
+    Perfil --> Normalizacao[Normalização e validação]
+    Normalizacao --> Inventario[Inventário comum, capacidades e extensões]
+    Inventario --> API[API administrativa]
+    API --> UI[Interface de gestão]
+```
+
+### 13.2 Contrato comum e qualidade dos dados
+
+O ACS definirá nomes, tipos e unidades estáveis para seus campos. Fabricante, modelo, serial, firmware e última comunicação compõem o núcleo inicial. Interfaces WAN, redes Wi-Fi, informações ópticas e telefonia serão acrescentadas conforme houver coleta implementada e homologação; recursos com múltiplas instâncias deverão ser representados como coleções, sem presumir índices fixos entre modelos.
+
+Cada perfil mapeará caminhos de parâmetros para esse contrato, incluindo conversão de tipos, unidades e validação de valores. A interface não deverá conhecer caminhos CWMP nem aplicar regras condicionais por fabricante.
+
+Cada observação deverá permitir rastrear o parâmetro de origem, o perfil e sua versão, e o horário de recebimento/coleta. A última comunicação da CPE não deverá atualizar artificialmente a data de todos os campos do inventário.
+
+| Situação | Comportamento esperado |
+| --- | --- |
+| Valor coletado e válido | Exibir o valor e seu horário de atualização |
+| Ainda não coletado | Indicar que a informação aguarda coleta |
+| Recurso confirmado como não suportado | Ocultar a seção ou indicar indisponibilidade |
+| Valor desatualizado | Preservar o valor e sinalizar sua idade conforme a política do campo |
+| Valor recebido inválido | Registrar a falha de interpretação sem substituir silenciosamente o último valor válido |
+
+Um Inform parcial não deverá apagar valores anteriores nem indicar ausência de suporte. Valores vazios ou nulos só terão significado de remoção quando isso estiver definido no mapeamento. A capacidade do equipamento, a disponibilidade do valor e sua atualização são dimensões distintas.
+
+### 13.3 Capacidades e extensões específicas
+
+O catálogo de capacidades deverá distinguir recursos desconhecidos, suportados e confirmados como não suportados, além de registrar o suporte homologado pelo ACS. A ausência de um parâmetro no Inform não será evidência suficiente para declarar um recurso não suportado.
+
+A API fornecerá essas capacidades para que a interface apresente seções como Wi-Fi, óptica ou telefonia conforme o equipamento. A apresentação de ações também deverá respeitar os RPCs implementados e as permissões do usuário, não apenas a capacidade declarada pela CPE.
+
+Campos exclusivos de marca ou modelo serão expostos como extensões identificadas e versionadas pelo perfil, com nome, tipo, unidade e regra de apresentação definidos. Não será exposto um objeto arbitrário com todos os parâmetros recebidos. Credenciais e valores sensíveis deverão ser excluídos do inventário comum e dos logs.
+
+### 13.4 Responsabilidades e persistência
+
+- `acs.domain`: modelos do inventário comum, observações e capacidades, independentes de HTTP, XML e banco.
+- `acs.cwmp.compatibility`: perfis, seleção determinística, mapeamentos e particularidades de fabricante/modelo/firmware.
+- `acs.application`: coordenação da normalização e atualização do inventário.
+- `acs.infrastructure`: persistência de valores já normalizados, origem e horários, sem regras de fabricante espalhadas pelo repositório.
+- `acs.api`: contrato versionado de leitura para a interface de gestão.
+
+A seleção dará preferência ao perfil mais específico aplicável, com precedência explícita e identificação da versão utilizada. Equipamentos sem perfil homologado usarão um perfil genérico conservador, expondo apenas os dados interpretados com segurança. Atualizações de firmware poderão exigir outro perfil; o nome comercial não basta para presumir equivalência.
+
+A persistência seguirá a estratégia híbrida da seção 14: colunas relacionais para identidade e campos comuns consultados frequentemente; JSONB validado para extensões variáveis; histórico seletivo conforme valor operacional e retenção. Mudanças de esquema deverão ter migrations Alembic. O armazenamento de parâmetros deverá seguir uma lista explícita de campos permitidos e uma política para dados sensíveis.
+
+### 13.5 Etapas de implementação
+
+1. Definir o contrato inicial, os estados de disponibilidade e as regras de atualização dos campos básicos já recebidos no Inform.
+2. Extrair a normalização do repositório para uma camada própria e implementar o perfil genérico, preservando o comportamento existente.
+3. Criar o primeiro perfil da Huawei de bancada a partir de fixtures anonimizadas e evidências do modelo/firmware efetivamente utilizado.
+4. Persistir origem, versão do perfil e horários por campo, com as migrations necessárias, preservando os registros existentes.
+5. Evoluir a API com capacidades e extensões validadas, mantendo compatibilidade com os consumidores do contrato atual.
+6. Acrescentar novos modelos e fabricantes mediante fixtures, testes e homologação; ampliar a coleta em uma entrega posterior de consultas remotas.
+
+A primeira implementação ficará limitada aos dados disponíveis no Inform. Informações não enviadas espontaneamente dependerão de coleta posterior, como `GetParameterValues`, prevista na entrega de consultas remotas. Este plano não declara esses RPCs implementados nem promete valores ainda não coletados.
+
+### 13.6 Critérios de aceite e testes
+
+- Fixtures anonimizadas por perfil, modelo e firmware, com origem documentada.
+- Parâmetros equivalentes de perfis diferentes resultam nos mesmos campos e unidades do contrato comum.
+- Conversões inválidas, campos ausentes e Inform parcial não corrompem o último valor válido nem sua data de coleta.
+- Capacidades desconhecidas não são confundidas com recursos não suportados.
+- Seleção de perfil, precedência e retorno ao perfil genérico têm comportamento determinístico e testado.
+- Extensões respeitam o esquema do perfil, e senhas ou parâmetros sensíveis não aparecem na API ou nos logs.
+- Integração com PostgreSQL verifica atualização parcial, rastreabilidade e preservação dos dados nas migrations.
+- Testes de contrato validam campos comuns, capacidades e extensões; os testes existentes de Inform e sessão continuam aprovados.
+- Homologação em CPE real confirma o mapeamento para cada combinação de modelo e firmware suportada.
 
 ## 14. Persistência
 
@@ -554,6 +633,8 @@ Objetivos:
 - implementar paginação e filtros básicos;
 - adicionar métricas e logs correlacionados;
 - ampliar testes por modelo e firmware.
+
+Evolução associada: executar o [plano de normalização do inventário](#131-plano-de-normalização-do-inventário) para os dados já recebidos no Inform, antes de ampliar a coleta por consultas remotas.
 
 ### Entrega 3 — Consultas remotas
 
