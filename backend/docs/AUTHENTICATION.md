@@ -300,6 +300,49 @@ aceitar a indicação de HTTPS encaminhada por cabeçalho.
 
 ## Respostas e compatibilidade
 
+### Diagnóstico de 401 e 503 na CPE
+
+Um `401` com `WWW-Authenticate: Basic` pode ser o desafio inicial: a CPE deve
+repetir a requisição com autenticação. Isso, isoladamente, não prova senha errada.
+`503` indica indisponibilidade do serviço e não exige trocar a senha da CPE.
+
+Os logs CWMP incluem `reason`, sem registrar cabeçalhos, usuário, senha ou texto
+de exceções:
+
+| HTTP | `reason` | Interpretação |
+| --- | --- | --- |
+| 401 | `authentication_required` | Requisição sem Authorization; desafio inicial |
+| 401 | `authentication_rejected` | Authorization fornecido, mas não aceito; pode ser formato inválido, conta desabilitada, política ou credencial incorreta |
+| 503 | `authentication_store_unavailable` | Erro de acesso ao banco durante autenticação; conferir conexão e migrations |
+| 503 | `authentication_busy` | Limite de processamento de autenticação ocupado |
+| 503 | `authentication_unavailable` | Adaptador de autenticação indisponível |
+| 503 | `storage_unavailable` | Erro ao persistir Inform, sessão ou operação |
+| 503 | `service_unavailable` | Serviço CWMP ainda não inicializado |
+
+Antes de reiniciar a CPE, verifique a infraestrutura. Abrir o Docker Desktop não
+garante que o contêiner esteja rodando. Na raiz do repositório:
+
+```bash
+docker compose up -d postgres
+docker compose ps
+cd backend
+uv run acs-db-check
+uv run alembic current
+uv run alembic upgrade head
+```
+
+O receptor mantém `pool_pre_ping` e não armazena falhas de autenticação em cache:
+pode aceitar a próxima tentativa após a recuperação do banco sem mudar a senha.
+O endpoint `/health` indica que a API está ativa; não substitui `acs-db-check`.
+
+O aumento do intervalo relatado na Huawei é compatível com o recuo exponencial
+recomendado para retentativas na [TR-069 1.0, A.5.3](https://www.broadband-forum.org/pdfs/tr-069-1-0-0.pdf).
+Isso não comprova que a CPE parou definitivamente nem define o intervalo máximo
+desse firmware. Depois de recuperar o ACS, aguarde a tentativa seguinte ou
+reaplique a configuração ACS na bancada; reiniciar a CPE não corrige o banco.
+
+### Contrato HTTP
+
 - Rotas protegidas por HTTPS sem credenciais válidas: `401` e `WWW-Authenticate: Basic`.
 - HTTP sem criptografia em rota protegida ou identidade da CPE incompatível:
   `403`, sem confirmação do Inform. Um servidor Uvicorn configurado somente para

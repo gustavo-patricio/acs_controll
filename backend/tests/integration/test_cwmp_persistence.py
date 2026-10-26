@@ -35,7 +35,11 @@ from acs.cwmp.soap.inform import parse_inform
 from acs.domain.cpe.inform import Event, Parameter
 from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
-from acs.domain.security import AccessDenied, AuthenticationFailed
+from acs.domain.security import (
+    AccessDenied,
+    AuthenticationFailed,
+    AuthenticationUnavailable,
+)
 from acs.infrastructure.database.auth_models import AuthAccount
 from acs.infrastructure.database.base import Base
 from acs.infrastructure.database.cpe_inventory import PostgresCpeInventoryRepository
@@ -902,6 +906,9 @@ async def test_missing_authentication_table_fails_closed(
     async with cwmp_database.engine.begin() as connection:
         await connection.execute(text("DROP TABLE auth_accounts"))
     authenticator = PostgresAuthenticator(cwmp_database)
+    with pytest.raises(AuthenticationUnavailable) as unavailable:
+        await authenticator.authenticate("test", PASSWORD, "cpe")
+    assert unavailable.value.reason == "authentication_store_unavailable"
     apps = (
         (
             real_admin_app(

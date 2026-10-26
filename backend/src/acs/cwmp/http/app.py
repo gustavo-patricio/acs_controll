@@ -36,6 +36,7 @@ from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import PostgresInformRepository
 from acs.infrastructure.database.queries import PostgresQueryRepository
 from acs.infrastructure.observability.cwmp import (
+    RejectionReason,
     configure_logging,
     record,
     record_inventory,
@@ -123,21 +124,26 @@ def create_app(
         request_id = uuid4()
         headers = {"X-Request-ID": str(request_id), "Cache-Control": "no-store"}
 
-        def error(status: int) -> Response:
-            record("request_rejected", request_id, status)
+        def error(status: int, reason: RejectionReason | None = None) -> Response:
+            record("request_rejected", request_id, status, reason=reason)
             return Response(status_code=status, headers=headers)
 
         if service is None:
-            return error(503)
+            return error(503, "service_unavailable")
         try:
             principal = await authenticate_request(request, authenticator, "cpe")
         except InsecureTransport:
             return error(403)
         except AuthenticationFailed:
             headers["WWW-Authenticate"] = 'Basic realm="acs-cpe", charset="UTF-8"'
-            return error(401)
-        except AuthenticationUnavailable:
-            return error(503)
+            return error(
+                401,
+                "authentication_rejected"
+                if "authorization" in request.headers
+                else "authentication_required",
+            )
+        except AuthenticationUnavailable as exc:
+            return error(503, exc.reason)
         if request.headers.get("content-encoding", "identity").lower() != "identity":
             return error(415)
         length = request.headers.get("content-length")
@@ -227,7 +233,7 @@ def create_app(
         except AccessDenied:
             return error(403)
         except StorageUnavailable:
-            return error(503)
+            return error(503, "storage_unavailable")
 
     return app
 

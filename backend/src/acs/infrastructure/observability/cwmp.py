@@ -2,10 +2,22 @@
 
 import json
 import logging
+from typing import Literal
 from uuid import UUID
 
 from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.events.session import CwmpSession
+from acs.domain.security import AuthenticationUnavailableReason
+
+RejectionReason = (
+    AuthenticationUnavailableReason
+    | Literal[
+        "authentication_required",
+        "authentication_rejected",
+        "service_unavailable",
+        "storage_unavailable",
+    ]
+)
 
 logger = logging.getLogger("acs.cwmp")
 
@@ -41,6 +53,7 @@ def record(
     session: CwmpSession | None = None,
     *,
     operation_id: UUID | None = None,
+    reason: RejectionReason | None = None,
 ) -> None:
     data: dict[str, str | int] = {
         "event": event,
@@ -55,4 +68,6 @@ def record(
         )
     if operation_id is not None:
         data["operation_id"] = str(operation_id)
+    if reason is not None:
+        data["reason"] = reason
     logger.info(json.dumps(data, separators=(",", ":")))

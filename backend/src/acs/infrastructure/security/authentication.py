@@ -37,7 +37,7 @@ class PostgresAuthenticator:
             async with asyncio.timeout(1):
                 await self._slots.acquire()
         except TimeoutError:
-            raise AuthenticationUnavailable from None
+            raise AuthenticationUnavailable("authentication_busy") from None
         try:
             async with self.database.session() as db:
                 account = await db.scalar(
@@ -79,6 +79,8 @@ class PostgresAuthenticator:
                     account.shared_cpe,
                 )
         except SQLAlchemyError:
-            raise AuthenticationUnavailable from None
+            raise AuthenticationUnavailable(
+                "authentication_store_unavailable"
+            ) from None
         finally:
             self._slots.release()

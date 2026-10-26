@@ -13,8 +13,21 @@ class AccessDenied(Exception):
     """An authenticated identity cannot perform this operation."""
 
 
+AuthenticationUnavailableReason = Literal[
+    "authentication_unavailable",
+    "authentication_store_unavailable",
+    "authentication_busy",
+]
+
+
 class AuthenticationUnavailable(Exception):
     """Authentication storage or processing is unavailable."""
+
+    def __init__(
+        self, reason: AuthenticationUnavailableReason = "authentication_unavailable"
+    ) -> None:
+        self.reason: AuthenticationUnavailableReason = reason
+        super().__init__(reason)
 
 
 @dataclass(frozen=True)
