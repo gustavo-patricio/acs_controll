@@ -73,7 +73,7 @@ def array(element: ET.Element, item: str, limit: int) -> list[ET.Element]:
     return result
 
 
-def parse_inform(payload: bytes) -> Inform:
+def parse_envelope(payload: bytes) -> tuple[str, ET.Element]:
     if len(payload) > MAX_BODY:
         raise BadEnvelope
     try:
@@ -101,14 +101,20 @@ def parse_inform(payload: bytes) -> Inform:
             ):
                 raise ValueError
         body = child(root, f"{{{SOAP}}}Body")
-        if len(body) != 1 or not body[0].tag.startswith(f"{{{CWMP}}}"):
+        if len(body) != 1 or not (
+            body[0].tag.startswith(f"{{{CWMP}}}") or body[0].tag == f"{{{SOAP}}}Fault"
+        ):
             raise ValueError
     except ValueError as exc:
         raise BadEnvelope from exc
-    if body[0].tag != f"{{{CWMP}}}Inform":
+    return rpc_id, body[0]
+
+
+def parse_inform(payload: bytes) -> Inform:
+    rpc_id, rpc = parse_envelope(payload)
+    if rpc.tag != f"{{{CWMP}}}Inform":
         raise RpcFault(rpc_id, FaultCode.METHOD_NOT_SUPPORTED)
     try:
-        rpc = body[0]
         fields(
             rpc,
             (

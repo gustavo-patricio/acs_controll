@@ -26,15 +26,25 @@ import acs.api.app as api_module
 from acs.api.app import create_app as real_admin_app
 from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.application.services.inform import InformService
+from acs.cwmp.compatibility.evidence import anonymized_inform
+from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
+from acs.cwmp.compatibility.huawei import HuaweiEG8145X6Profile
+from acs.cwmp.http import app as cwmp_module
 from acs.cwmp.http.app import create_app as real_cwmp_app
 from acs.cwmp.soap.inform import parse_inform
-from acs.domain.cpe.inform import Event
-from acs.domain.events.session import InvalidSession, StorageUnavailable
+from acs.domain.cpe.inform import Event, Parameter
+from acs.domain.cpe.inventory import NormalizedInventory
+from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
 from acs.domain.security import AccessDenied, AuthenticationFailed
 from acs.infrastructure.database.auth_models import AuthAccount
 from acs.infrastructure.database.base import Base
 from acs.infrastructure.database.cpe_inventory import PostgresCpeInventoryRepository
-from acs.infrastructure.database.cwmp_models import Cpe, CwmpEvent, CwmpSessionRow
+from acs.infrastructure.database.cwmp_models import (
+    Cpe,
+    CpeInventoryField,
+    CwmpEvent,
+    CwmpSessionRow,
+)
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import PostgresInformRepository
 from acs.infrastructure.security import accounts as account_cli
@@ -91,6 +101,360 @@ async def cwmp_database() -> AsyncGenerator[Database]:
         async with admin.engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_receiver_captures_one_anonymized_inform_after_commit(
+    cwmp_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    inform_xml: bytes,
+) -> None:
+    inform = parse_inform(inform_xml)
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
+    first, token = await service.receive(inform, None, principal=principal_for(inform))
+    await service.finish(token, principal=principal_for(inform))
+    output = tmp_path / "private" / "inform.xml"
+    settings = get_settings().model_copy(
+        update={
+            "environment": "test",
+            "cwmp_allow_shared_credentials": True,
+            "cwmp_capture_cpe_id": first.cpe_id,
+            "cwmp_capture_output": output,
+            "database_url": PostgresDsn(
+                cwmp_database.engine.url.render_as_string(hide_password=False)
+            ),
+        }
+    )
+    monkeypatch.setattr(cwmp_module, "get_settings", lambda: settings)
+    async with cwmp_database.session() as db:
+        db.add(
+            AuthAccount(
+                id=uuid4(),
+                kind="cpe",
+                username="capture-lab",
+                role="device",
+                shared_cpe=True,
+                password_hash=hash_password(PASSWORD),
+                enabled=True,
+            )
+        )
+        await db.commit()
+    app = real_cwmp_app()
+    async with (
+        app.router.lifespan_context(app),
+        RealClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            auth=("capture-lab", PASSWORD),
+        ) as client,
+    ):
+        response = await client.post(
+            "/cwmp", content=inform_xml, headers={"Content-Type": "text/xml"}
+        )
+        assert response.status_code == 200
+        saved = output.read_bytes()
+        assert b"LAB000001" not in saved and b"SYNTHETIC-SECRET" not in saved
+        assert parse_inform(saved).parameters == (inform.parameters[0],)
+        # Retrying a session leaves both evidence and event persistence unchanged.
+        assert (
+            await client.post(
+                "/cwmp", content=inform_xml, headers={"Content-Type": "text/xml"}
+            )
+        ).status_code == 200
+        assert (await client.post("/cwmp", content=b"")).status_code == 204
+        assert output.read_bytes() == saved
+    async with cwmp_database.session() as db:
+        assert await db.scalar(select(func.count()).select_from(Cpe)) == 1
+        assert await db.scalar(select(func.count()).select_from(CwmpSessionRow)) == 2
+        assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 4
+
+
+@pytest.mark.asyncio
+async def test_anonymous_inventory_startup_and_authentication_restoration(
+    cwmp_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "environment": "test",
+            "api_allow_anonymous_inventory": True,
+            "database_url": PostgresDsn(
+                cwmp_database.engine.url.render_as_string(hide_password=False)
+            ),
+        }
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    app = real_admin_app()
+    async with (
+        app.router.lifespan_context(app),
+        RealClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+        ) as client,
+    ):
+        response = await client.get("/api/v1/cpes")
+        assert response.status_code == 200 and response.json()["items"] == []
+        assert (await client.get(f"/api/v1/cpes/{uuid4()}")).status_code == 404
+    settings = settings.model_copy(update={"api_allow_anonymous_inventory": False})
+    restored = real_admin_app()
+    async with (
+        restored.router.lifespan_context(restored),
+        RealClient(
+            transport=ASGITransport(app=restored),
+            base_url="https://test",
+        ) as client,
+    ):
+        assert (await client.get("/api/v1/cpes")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_inventory_partial_invalid_and_conflicting_updates_preserve_values(
+    cwmp_database: Database,
+) -> None:
+    fixture = Path(__file__).parents[1] / "fixtures/cwmp/inform_device_inventory.xml"
+    inform = parse_inform(fixture.read_bytes())
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
+    principal = principal_for(inform)
+    first, cookie = await service.receive(inform, None, principal=principal)
+    await service.finish(cookie, principal=principal)
+    expected = {"model": "TEST-MODEL", "firmware": "LAB-1.0", "hardware": "TEST-HW"}
+    cases = (
+        (),
+        (
+            Parameter("Device.DeviceInfo.ModelName", " ", "xsd:string"),
+            Parameter("Device.DeviceInfo.SoftwareVersion", "", "xsd:string"),
+            Parameter("Device.DeviceInfo.HardwareVersion", "x" * 257, "xsd:string"),
+        ),
+        (
+            Parameter("Device.DeviceInfo.SoftwareVersion", "FIRST", "xsd:string"),
+            Parameter(
+                "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+                "SECOND",
+                "xsd:string",
+            ),
+        ),
+    )
+    inventory = CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database))
+    async with AsyncClient(
+        transport=ASGITransport(app=create_admin_app(inventory))
+    ) as client:
+        initial = (await client.get(f"/api/v1/cpes/{first.cpe_id}")).json()
+        for parameters in cases:
+            current = replace(inform, parameters=parameters)
+            _, cookie = await service.receive(current, None, principal=principal)
+            await service.finish(cookie, principal=principal)
+            response = await client.get(f"/api/v1/cpes/{first.cpe_id}")
+            assert response.status_code == 200
+            data = response.json()
+            assert {name: data[name] for name in expected} == expected
+            assert data["first_seen"] == initial["first_seen"]
+            assert data["last_seen"] >= initial["last_seen"]
+        changed = replace(
+            inform,
+            parameters=(
+                Parameter(
+                    "InternetGatewayDevice.DeviceInfo.ModelName",
+                    " NEW-MODEL ",
+                    "xsd:string",
+                ),
+            ),
+        )
+        _, cookie = await service.receive(changed, None, principal=principal)
+        # Repeating this session must not update inventory or duplicate its events.
+        await service.receive(inform, cookie, principal=principal)
+        await service.finish(cookie, principal=principal)
+        data = (await client.get(f"/api/v1/cpes/{first.cpe_id}")).json()
+        assert data["model"] == "NEW-MODEL"
+        assert data["firmware"] == "LAB-1.0" and data["hardware"] == "TEST-HW"
+        assert "SYNTHETIC-SECRET" not in str(data)
+    async with cwmp_database.session() as db:
+        assert await db.scalar(select(func.count()).select_from(Cpe)) == 1
+        assert await db.scalar(select(func.count()).select_from(CwmpSessionRow)) == 5
+        assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 5
+
+
+@pytest.mark.asyncio
+async def test_huawei_profile_startup_persistence_retries_and_inventory_api(
+    cwmp_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = (
+        Path(__file__).parents[1] / "fixtures/cwmp/huawei_eg8145x6_10_v5r022c00s364.xml"
+    ).read_bytes()
+    inform = parse_inform(payload)
+    # Existing CPEs acquire the model on their next Inform; no data backfill.
+    previous = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
+    registered, token = await previous.receive(
+        inform, None, principal=principal_for(inform)
+    )
+    await previous.finish(token, principal=principal_for(inform))
+    async with cwmp_database.session() as db:
+        row = await db.get(Cpe, registered.cpe_id)
+        assert row is not None and row.model is None
+        first_seen = row.first_seen
+        db.add(
+            AuthAccount(
+                id=uuid4(),
+                kind="cpe",
+                username="huawei-profile-lab",
+                role="device",
+                shared_cpe=True,
+                password_hash=hash_password(PASSWORD),
+                enabled=True,
+            )
+        )
+        await db.commit()
+    settings = get_settings().model_copy(
+        update={
+            "environment": "test",
+            "cwmp_allow_shared_credentials": True,
+            "database_url": PostgresDsn(
+                cwmp_database.engine.url.render_as_string(hide_password=False)
+            ),
+        }
+    )
+    monkeypatch.setattr(cwmp_module, "get_settings", lambda: settings)
+    observations: list[NormalizedInventory] = []
+
+    def observe(session: CwmpSession, inventory: NormalizedInventory) -> None:
+        assert session.cpe_id == registered.cpe_id
+        observations.append(inventory)
+
+    monkeypatch.setattr(cwmp_module, "record_inventory", observe)
+    app = real_cwmp_app()
+    inventory = CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database))
+    cases = (
+        (inform, HuaweiEG8145X6Profile.profile_id, "V5R022C00S364"),
+        (replace(inform, parameters=()), "generic-device-info", "V5R022C00S364"),
+        (
+            replace(
+                inform,
+                parameters=inform.parameters
+                + (
+                    Parameter(
+                        "InternetGatewayDevice.DeviceInfo.ModelName", "", "xsd:string"
+                    ),
+                ),
+            ),
+            HuaweiEG8145X6Profile.profile_id,
+            "V5R022C00S364",
+        ),
+        (
+            replace(
+                inform,
+                parameters=(
+                    Parameter(
+                        "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+                        "UNKNOWN-FW",
+                        "xsd:string",
+                    ),
+                ),
+            ),
+            "generic-device-info",
+            "UNKNOWN-FW",
+        ),
+        (inform, HuaweiEG8145X6Profile.profile_id, "V5R022C00S364"),
+    )
+    async with (
+        app.router.lifespan_context(app),
+        RealClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            auth=("huawei-profile-lab", PASSWORD),
+        ) as client,
+        AsyncClient(transport=ASGITransport(app=create_admin_app(inventory))) as admin,
+    ):
+        for index, (current, profile_id, firmware) in enumerate(cases):
+            body = anonymized_inform(current, datetime.now(UTC))
+            response = await client.post(
+                "/cwmp", content=body, headers={"Content-Type": "text/xml"}
+            )
+            assert response.status_code == 200 and "InformResponse" in response.text
+            assert len(observations) == index + 1
+            assert observations[-1].profile_id == profile_id
+            repeat = await client.post(
+                "/cwmp", content=body, headers={"Content-Type": "text/xml"}
+            )
+            assert repeat.status_code == 200 and len(observations) == index + 1
+            assert (await client.post("/cwmp", content=b"")).status_code == 204
+            detail = await admin.get(f"/api/v1/cpes/{registered.cpe_id}")
+            assert detail.status_code == 200
+            assert detail.json()["model"] == "EG8145X6-10"
+            assert detail.json()["firmware"] == firmware
+            assert detail.json()["hardware"] == "343D.D"
+            assert "profile_id" not in detail.json()
+            listed = (await admin.get("/api/v1/cpes")).json()["items"]
+            assert len(listed) == 1 and listed[0]["model"] == "EG8145X6-10"
+    async with cwmp_database.session() as db:
+        row = await db.get(Cpe, registered.cpe_id)
+        assert row is not None and row.first_seen == first_seen
+        assert await db.scalar(select(func.count()).select_from(Cpe)) == 1
+        assert await db.scalar(select(func.count()).select_from(CwmpSessionRow)) == 6
+        assert await db.scalar(select(func.count()).select_from(CwmpEvent)) == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("root", ["Device", "InternetGatewayDevice"])
+async def test_receiver_startup_wires_generic_inventory_normalization(
+    cwmp_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
+) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "environment": "test",
+            "cwmp_allow_shared_credentials": True,
+            "database_url": PostgresDsn(
+                cwmp_database.engine.url.render_as_string(hide_password=False)
+            ),
+        }
+    )
+    monkeypatch.setattr(cwmp_module, "get_settings", lambda: settings)
+    async with cwmp_database.session() as db:
+        db.add(
+            AuthAccount(
+                id=uuid4(),
+                kind="cpe",
+                username="normalization-lab",
+                role="device",
+                shared_cpe=True,
+                password_hash=hash_password(PASSWORD),
+                enabled=True,
+            )
+        )
+        await db.commit()
+    app = real_cwmp_app()
+    payload = (
+        Path(__file__).parents[1] / "fixtures/cwmp/inform_device_inventory.xml"
+    ).read_bytes()
+    payload = payload.replace(b"Device.", f"{root}.".encode())
+    async with (
+        app.router.lifespan_context(app),
+        RealClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            auth=("normalization-lab", PASSWORD),
+        ) as client,
+    ):
+        response = await client.post(
+            "/cwmp", content=payload, headers={"Content-Type": "text/xml"}
+        )
+        assert response.status_code == 200
+        assert (await client.post("/cwmp", content=b"")).status_code == 204
+    async with cwmp_database.session() as db:
+        cpe = (await db.scalars(select(Cpe))).one()
+        assert (cpe.model, cpe.firmware, cpe.hardware) == (
+            "TEST-MODEL",
+            "LAB-1.0",
+            "TEST-HW",
+        )
 
 
 @pytest.mark.asyncio
@@ -177,7 +541,9 @@ async def test_temporary_cpe_account_http_lifecycle(
         authenticator = PostgresAuthenticator(cwmp_database, allow_shared_cpe=True)
         principal = await authenticator.authenticate("http-device", PASSWORD, "cpe")
         assert principal.shared_cpe == shared
-        await InformService(PostgresInformRepository(cwmp_database)).receive(
+        await InformService(
+            PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+        ).receive(
             parse_inform(inform_xml),
             None,
             principal=principal,
@@ -267,7 +633,10 @@ async def test_authenticated_flow_identity_isolation_revocation_and_admin_access
         await db.commit()
     authenticator = PostgresAuthenticator(cwmp_database)
     app = real_cwmp_app(
-        InformService(PostgresInformRepository(cwmp_database)), authenticator
+        InformService(
+            PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+        ),
+        authenticator,
     )
     async with RealClient(
         transport=ASGITransport(app=app), base_url="https://test"
@@ -414,7 +783,10 @@ async def test_shared_profile_multiple_devices_and_access_controls(
     with pytest.raises(AccessDenied):
         principal.require("inventory:read")
     app = real_cwmp_app(
-        InformService(PostgresInformRepository(cwmp_database)), authenticator
+        InformService(
+            PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+        ),
+        authenticator,
     )
     async with RealClient(
         transport=ASGITransport(app=app),
@@ -541,7 +913,11 @@ async def test_missing_authentication_table_fails_closed(
         ),
         (
             real_cwmp_app(
-                InformService(PostgresInformRepository(cwmp_database)), authenticator
+                InformService(
+                    PostgresInformRepository(cwmp_database),
+                    GenericInventoryNormalizer(),
+                ),
+                authenticator,
             ),
             "/cwmp",
             "POST",
@@ -577,7 +953,9 @@ async def test_registered_cpes_are_visible_in_paginated_inventory(
             "offset": 0,
         }
         inform = parse_inform(inform_xml)
-        service = InformService(PostgresInformRepository(cwmp_database))
+        service = InformService(
+            PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+        )
         await service.receive(inform, None, principal=principal_for(inform))
         await service.receive(inform, None, principal=principal_for(inform))
         other = replace(inform, device=replace(inform.device, serial_number="SECOND"))
@@ -611,7 +989,9 @@ async def test_cpe_detail_and_history_are_scoped_paginated_and_read_only(
     inform_xml: bytes,
 ) -> None:
     inform = parse_inform(inform_xml)
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     first, cookie = await service.receive(inform, None, principal=principal_for(inform))
     await service.finish(cookie, principal=principal_for(inform))
     second, _ = await service.receive(inform, None, principal=principal_for(inform))
@@ -736,7 +1116,9 @@ async def test_upsert_sessions_events_and_repeated_inform(
     cwmp_database: Database, inform_xml: bytes
 ) -> None:
     inform = parse_inform(inform_xml)
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     first, cookie = await service.receive(inform, None, principal=principal_for(inform))
     duplicate, _ = await service.receive(
         inform, cookie, principal=principal_for(inform)
@@ -779,7 +1161,9 @@ async def test_upsert_sessions_events_and_repeated_inform(
 async def test_concurrent_upserts_do_not_duplicate_cpe(
     cwmp_database: Database, inform_xml: bytes
 ) -> None:
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     inform = parse_inform(inform_xml)
     results = await asyncio.gather(
         *(
@@ -797,12 +1181,14 @@ async def test_concurrent_upserts_do_not_duplicate_cpe(
 async def test_failed_events_roll_back_entire_inform(
     cwmp_database: Database, inform_xml: bytes
 ) -> None:
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     invalid = replace(parse_inform(inform_xml), events=(Event("x" * 65, ""),))
     with pytest.raises(StorageUnavailable):
         await service.receive(invalid, None, principal=principal_for(invalid))
     async with cwmp_database.session() as db:
-        for model in (Cpe, CwmpSessionRow, CwmpEvent):
+        for model in (Cpe, CpeInventoryField, CwmpSessionRow, CwmpEvent):
             assert await db.scalar(select(func.count()).select_from(model)) == 0
 
 
@@ -810,7 +1196,9 @@ async def test_failed_events_roll_back_entire_inform(
 async def test_real_http_flow_persists_completion(
     cwmp_database: Database, inform_xml: bytes
 ) -> None:
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     async with AsyncClient(
         transport=ASGITransport(app=create_app(service)), base_url="http://test"
     ) as client:
@@ -830,7 +1218,9 @@ async def test_real_http_flow_persists_completion(
 async def test_simulated_cpe_reuses_identity_across_completed_sessions(
     cwmp_database: Database,
 ) -> None:
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     async with AsyncClient(
         transport=ASGITransport(app=create_app(service)), base_url="http://test"
     ) as client:
@@ -849,7 +1239,9 @@ async def test_simulated_cpe_reuses_identity_across_completed_sessions(
 async def test_session_cannot_be_reused_or_hijacked(
     cwmp_database: Database, inform_xml: bytes
 ) -> None:
-    service = InformService(PostgresInformRepository(cwmp_database))
+    service = InformService(
+        PostgresInformRepository(cwmp_database), GenericInventoryNormalizer()
+    )
     inform = parse_inform(inform_xml)
     _, cookie = await service.receive(inform, None, principal=principal_for(inform))
     other = replace(inform, device=replace(inform.device, serial_number="OTHER"))
@@ -874,6 +1266,9 @@ async def test_expired_session_cannot_continue(
         now - timedelta(minutes=2),
         now - timedelta(seconds=1),
         False,
+        inventory=GenericInventoryNormalizer().normalize(
+            parse_inform(inform_xml), now - timedelta(minutes=2)
+        ),
     )
     with pytest.raises(InvalidSession):
         await repo.complete("expired", now)

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from acs.domain.cpe.inventory_view import CpeInventoryView
 from acs.domain.security import AccessDenied, Principal
 
 
@@ -74,6 +75,8 @@ class EventPage:
 
 
 class CpeInventoryRepository(Protocol):
+    async def get_inventory(self, cpe_id: UUID) -> CpeInventoryView: ...
+
     async def get_cpe(self, cpe_id: UUID) -> CpeSummary: ...
 
     async def list_sessions(
@@ -109,6 +112,10 @@ class CpeInventoryService:
     async def get_cpe(self, cpe_id: UUID) -> CpeSummary:
         self._authorize()
         return await self.repository.get_cpe(cpe_id)
+
+    async def get_inventory(self, cpe_id: UUID) -> CpeInventoryView:
+        self._authorize()
+        return await self.repository.get_inventory(cpe_id)
 
     async def list_sessions(
         self, cpe_id: UUID, limit: int = 50, offset: int = 0

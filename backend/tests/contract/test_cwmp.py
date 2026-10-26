@@ -12,10 +12,12 @@ from httpx import ASGITransport, BasicAuth
 from pydantic import PostgresDsn
 
 from acs.application.services.inform import InformService
+from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
 from acs.cwmp.http import app as cwmp_module
 from acs.cwmp.http.app import COOKIE
 from acs.cwmp.http.openapi import INFORM_EXAMPLE
 from acs.domain.cpe.inform import Inform
+from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
 from acs.settings import Settings
 from auth_support import PASSWORD
@@ -26,6 +28,7 @@ from auth_support import cwmp_app as create_app
 class MemoryRepository:
     def __init__(self) -> None:
         self.sessions: dict[str, CwmpSession] = {}
+        self.inventory: NormalizedInventory | None = None
 
     async def accept(
         self,
@@ -34,7 +37,10 @@ class MemoryRepository:
         now: datetime,
         expires_at: datetime,
         continuing: bool,
+        *,
+        inventory: NormalizedInventory,
     ) -> CwmpSession:
+        self.inventory = inventory
         if continuing:
             raise InvalidSession
         row = CwmpSession(
@@ -61,7 +67,11 @@ class MemoryRepository:
 @pytest.mark.asyncio
 async def test_swagger_contract_and_documented_session_flow() -> None:
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(MemoryRepository()))),
+        transport=ASGITransport(
+            app=create_app(
+                InformService(MemoryRepository(), GenericInventoryNormalizer())
+            )
+        ),
         base_url="http://test",
     ) as client:
         docs = await client.get("/docs")
@@ -111,7 +121,7 @@ async def test_inform_then_empty_post(
     inform_xml: bytes, caplog: pytest.LogCaptureFixture
 ) -> None:
     repo = MemoryRepository()
-    app = create_app(InformService(repo))
+    app = create_app(InformService(repo, GenericInventoryNormalizer()))
     caplog.set_level(logging.INFO, logger="acs.cwmp")
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -165,7 +175,9 @@ async def test_http_rejects_invalid_input(
 ) -> None:
     repo = MemoryRepository()
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(repo))),
+        transport=ASGITransport(
+            app=create_app(InformService(repo, GenericInventoryNormalizer()))
+        ),
         base_url="http://test",
     ) as client:
         response = await client.post(
@@ -178,7 +190,11 @@ async def test_http_rejects_invalid_input(
 @pytest.mark.asyncio
 async def test_invalid_arguments_return_soap_fault(inform_xml: bytes) -> None:
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(MemoryRepository()))),
+        transport=ASGITransport(
+            app=create_app(
+                InformService(MemoryRepository(), GenericInventoryNormalizer())
+            )
+        ),
         base_url="http://test",
     ) as client:
         response = await client.post(
@@ -198,6 +214,8 @@ class BrokenRepository(MemoryRepository):
         now: datetime,
         expires_at: datetime,
         continuing: bool,
+        *,
+        inventory: NormalizedInventory,
     ) -> CwmpSession:
         raise StorageUnavailable
 
@@ -205,7 +223,11 @@ class BrokenRepository(MemoryRepository):
 @pytest.mark.asyncio
 async def test_storage_failure_never_acknowledges_inform(inform_xml: bytes) -> None:
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(BrokenRepository()))),
+        transport=ASGITransport(
+            app=create_app(
+                InformService(BrokenRepository(), GenericInventoryNormalizer())
+            )
+        ),
         base_url="http://test",
     ) as client:
         response = await client.post(
@@ -224,7 +246,9 @@ async def test_chunked_request_is_bounded() -> None:
 
     repo = MemoryRepository()
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(repo))),
+        transport=ASGITransport(
+            app=create_app(InformService(repo, GenericInventoryNormalizer()))
+        ),
         base_url="http://test",
     ) as client:
         response = await client.post(
@@ -238,7 +262,9 @@ async def test_chunked_request_is_bounded() -> None:
 async def test_unsupported_rpc_returns_standard_fault(inform_xml: bytes) -> None:
     repo = MemoryRepository()
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(InformService(repo))),
+        transport=ASGITransport(
+            app=create_app(InformService(repo, GenericInventoryNormalizer()))
+        ),
         base_url="http://test",
     ) as client:
         response = await client.post(

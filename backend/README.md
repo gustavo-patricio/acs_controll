@@ -1,6 +1,21 @@
 # Backend ACS
 
+## Normalização do inventário
+
+O inventário básico recebido no Inform utiliza um perfil genérico para `Device`
+e `InternetGatewayDevice`, com seleção do [perfil Huawei EG8145X6-10 / V5R022C00S364](docs/HUAWEI_PROFILE.md)
+quando o Inform corresponde à combinação validada. Consulte
+[normalização do inventário](docs/INVENTORY_NORMALIZATION.md) para campos aceitos,
+atualizações parciais, validação e limites desta primeira entrega.
+
 ## Atualização de autenticação
+
+Para desenvolver o frontend sem login, use
+`ACS_API_ALLOW_ANONYMOUS_INVENTORY=true` no `.env` e reinicie a API. Em
+desenvolvimento/teste, isso libera somente as consultas de CPEs, sessões e
+eventos e remove a exigência de autenticação dessas operações no Swagger.
+Consulte [consultas sem login](docs/AUTHENTICATION.md#consultas-sem-login-durante-o-desenvolvimento-do-frontend).
+Para voltar a exigir login, defina `false` e reinicie.
 
 Para criar e excluir credenciais CPE pelo Swagger, habilite
 `ACS_ENABLE_TEST_CPE_ACCOUNTS=true` no `.env`, reinicie a API e autentique-se
@@ -17,8 +32,9 @@ O usuário compartilhado de referência da bancada é `acs_bancada`. Consulte o
 guia acima para cadastro em um banco novo, configuração da CPE e rotação da
 senha. A senha não é armazenada na documentação.
 
-As requisições CWMP e de inventário agora exigem **HTTP Basic sobre HTTPS** e contas
-previamente cadastradas. Siga primeiro o [guia de autenticação](docs/AUTHENTICATION.md):
+Por padrão, as requisições CWMP e de inventário exigem **HTTP Basic sobre HTTPS**
+e contas previamente cadastradas. A opção acima libera apenas a leitura do
+inventário no ambiente de desenvolvimento. Siga o [guia de autenticação](docs/AUTHENTICATION.md):
 aplique a migration `0002_auth_accounts`, crie contas separadas para administradores
 e CPEs com `uv run acs-account`, configure certificados TLS confiáveis e use
 **Authorize** no Swagger. O histórico de sessões anônimas existentes é preservado.
@@ -136,6 +152,23 @@ A entrega de consulta do inventário não adicionou colunas nem exigiu migration
 Filtros e opções de ordenação adicionais, assim como a gestão completa de
 identidades e grupos, permanecem para etapas futuras.
 
+### Inventário normalizado e rastreabilidade
+
+`GET /api/v1/cpes/{cpe_id}/inventory` expõe modelo, firmware e hardware com
+origem, perfil, horários e última observação. Também distingue capacidades
+desconhecidas de recursos confirmados, sem presumir suporte a Wi-Fi, WAN, óptica
+ou telefonia. Está disponível no Swagger e segue a política de leitura do
+inventário, incluindo a exceção anônima de laboratório.
+
+Consulte o [contrato completo](docs/INVENTORY_API.md) e a
+[implementação de GetParameterNames/GetParameterValues](docs/READ_QUERIES.md).
+O GET lê o banco. Para solicitar uma leitura remota pelo perfil Huawei homologado,
+use `POST /api/v1/cpes/{cpe_id}/queries` e acompanhe
+`GET /api/v1/cpes/{cpe_id}/queries/{operation_id}`. Essas duas rotas exigem
+autenticação, mesmo quando o inventário anônimo está habilitado. O POST exige
+papel `administrator`; a leitura aguarda a próxima sessão da CPE.
+Aplique `uv run alembic upgrade head` e reinicie API e receptor CWMP.
+
 ### Detalhes, sessões e eventos da CPE
 
 Utilize o `id` retornado pelo inventário, não o número de série. As três rotas estão
@@ -226,7 +259,28 @@ As requisições gravam no banco configurado; use somente dados de desenvolvimen
 O exemplo mínimo exercita o receptor, não a conformidade completa de uma CPE.
 Os recursos visuais do Swagger exigem acesso à internet para carregar a CDN padrão.
 
-### Acesso LAN no WSL2 e recuperação do encaminhamento
+### Acesso LAN no WSL espelhado (atual)
+
+O laboratório agora usa `networkingMode=mirrored`, com IP `192.168.18.7` no WSL.
+Siga o [guia de rede espelhada e certificados](docs/WSL_MIRRORED.md) para emitir
+o certificado da LAN, importar a CA e configurar o firewall. O redirecionamento
+antigo para `172.23.109.98` deve ser removido, não recriado nesse modo.
+
+Os scripts `scripts/create_lab_tls.sh` e `scripts/configure_wsl_mirrored.ps1`
+preparam respectivamente os certificados locais e a configuração do Windows.
+O segundo exige PowerShell como administrador. A URL da CPE continua sendo
+`https://192.168.18.7:7547/cwmp` enquanto esse for o IP do servidor.
+
+Inicie o receptor em `backend/` com o certificado da LAN:
+
+```bash
+uv run uvicorn acs.cwmp.http.app:app --host 0.0.0.0 --port 7547 --no-access-log --no-proxy-headers --ssl-certfile .tls/mirrored/server.crt --ssl-keyfile .tls/mirrored/server.key
+```
+
+### Referência: acesso LAN no WSL2 com NAT
+
+Os comandos abaixo são mantidos para uma eventual volta ao modo NAT. Não execute
+a criação do portproxy enquanto estiver usando a rede espelhada.
 
 No laboratório com rede NAT, mantenha o PostgreSQL ativo e inicie o receptor em
 `backend/`, no WSL, escutando também fora do loopback:
@@ -283,6 +337,17 @@ ambos estão em execução e atualize o destino do encaminhamento se o IP do WSL
 Não exponha este receptor de desenvolvimento à internet.
 
 ## Validação
+
+A persistência de [origem, perfil e horários por campo](docs/INVENTORY_PROVENANCE.md)
+requer `uv run alembic upgrade head` antes de iniciar o receptor atualizado.
+A migration preserva os valores existentes; metadados são obtidos dos próximos Informs.
+
+### Coleta de evidências da CPE de bancada
+
+Para preparar um perfil de normalização a partir de um Inform real, utilize a
+[coleta controlada e anonimizada](docs/INFORM_CAPTURE.md). Ela seleciona uma CPE
+por UUID, tem prazo e salva no máximo uma fixture parcial. É desativada por padrão
+e não grava XML bruto nem credenciais.
 
 ### Simulador de CPE como testes pytest
 

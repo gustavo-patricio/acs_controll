@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:cwmp="urn:dslforum-org:cwmp-1-0"
+ xmlns:enc="http://schemas.xmlsoap.org/soap/encoding/"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+ <soap:Header><cwmp:ID soap:mustUnderstand="1">ANON-GPV-001</cwmp:ID></soap:Header>
+ <soap:Body><cwmp:GetParameterValuesResponse>
+  <ParameterList enc:arrayType="cwmp:ParameterValueStruct[3]">
+   <ParameterValueStruct><Name>InternetGatewayDevice.DeviceInfo.HardwareVersion</Name><Value xsi:type="xsd:string">343D.D</Value></ParameterValueStruct>
+   <ParameterValueStruct><Name>InternetGatewayDevice.DeviceInfo.ModelName</Name><Value xsi:type="xsd:string">EG8145X6-10</Value></ParameterValueStruct>
+   <ParameterValueStruct><Name>InternetGatewayDevice.DeviceInfo.SoftwareVersion</Name><Value xsi:type="xsd:string">V5R022C00S364</Value></ParameterValueStruct>
+  </ParameterList>
+ </cwmp:GetParameterValuesResponse></soap:Body>
+</soap:Envelope>

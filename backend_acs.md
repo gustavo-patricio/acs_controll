@@ -412,7 +412,7 @@ Os modelos Huawei já observados deverão iniciar a matriz de homologação, sem
 
 ### 13.1 Plano de normalização do inventário
 
-**Estado: planejado.** Atualmente, o receptor processa `Inform`/`InformResponse` e a continuação vazia da sessão. A extração de modelo, firmware e hardware está no repositório de persistência, com suporte aos caminhos básicos sob `Device` e `InternetGatewayDevice`. Ainda não há seleção de perfis, catálogo de capacidades ou extensões estruturadas na API.
+**Estado: etapas 1 a 5 implementadas no escopo inicial.** O receptor processa `Inform`/`InformResponse` e a continuação vazia da sessão. O seletor aplica o perfil `huawei-eg8145x6-10-v5r022c00s364`, versão `1`, somente à identificação e ao firmware validados, retornando ao `generic-device-info`, versão `1`, nos demais casos. O perfil Huawei pode obter o modelo de `DeviceId.ProductClass` quando `ModelName` estiver ausente. O repositório preserva o último valor válido em atualizações parciais ou inválidas. A migration `0004_inventory_provenance` persiste origem, perfil e horários por campo, distinguindo o valor válido da última observação inválida e impedindo retrocessos por observações antigas, sem inferir metadados legados. `GET /api/v1/cpes/{cpe_id}/inventory` expõe esses dados e um catálogo explícito de capacidades ainda desconhecidas, mantendo os contratos anteriores. Extensões permanecem vazias até existir evidência homologada e schema específico. Consulte as [decisões de normalização](backend/docs/INVENTORY_NORMALIZATION.md), o [perfil Huawei](backend/docs/HUAWEI_PROFILE.md), as [regras de persistência](backend/docs/INVENTORY_PROVENANCE.md) e o [contrato da API](backend/docs/INVENTORY_API.md).
 
 O objetivo é oferecer uma interface de gestão única, com informações comuns a todas as CPEs e seções específicas conforme o equipamento e o suporte homologado pelo ACS.
 
@@ -466,6 +466,11 @@ A persistência seguirá a estratégia híbrida da seção 14: colunas relaciona
 
 ### 13.5 Etapas de implementação
 
+A preparação da etapa 3 agora inclui um [coletor controlado de Inform anonimizado](backend/docs/INFORM_CAPTURE.md),
+desativado por padrão, limitado a uma CPE e uma janela curta. A primeira evidência
+real da Huawei EG8145X6-10 / V5R022C00S364 foi coletada e revisada em 25/10/2026;
+o perfil Huawei correspondente foi implementado com seleção restrita a essa evidência.
+
 1. Definir o contrato inicial, os estados de disponibilidade e as regras de atualização dos campos básicos já recebidos no Inform.
 2. Extrair a normalização do repositório para uma camada própria e implementar o perfil genérico, preservando o comportamento existente.
 3. Criar o primeiro perfil da Huawei de bancada a partir de fixtures anonimizadas e evidências do modelo/firmware efetivamente utilizado.
@@ -473,7 +478,10 @@ A persistência seguirá a estratégia híbrida da seção 14: colunas relaciona
 5. Evoluir a API com capacidades e extensões validadas, mantendo compatibilidade com os consumidores do contrato atual.
 6. Acrescentar novos modelos e fabricantes mediante fixtures, testes e homologação; ampliar a coleta em uma entrega posterior de consultas remotas.
 
-A primeira implementação ficará limitada aos dados disponíveis no Inform. Informações não enviadas espontaneamente dependerão de coleta posterior, como `GetParameterValues`, prevista na entrega de consultas remotas. Este plano não declara esses RPCs implementados nem promete valores ainda não coletados.
+A primeira implementação ficou limitada ao Inform. A entrega de
+[consultas remotas](backend/docs/READ_QUERIES.md) acrescentou GPN delimitado e GPV
+dos três campos DeviceInfo para o perfil Huawei homologado. Novos campos ainda
+dependem de evidência, mapeamento e testes próprios; nenhum valor é presumido.
 
 ### 13.6 Critérios de aceite e testes
 
@@ -637,6 +645,13 @@ Objetivos:
 Evolução associada: executar o [plano de normalização do inventário](#131-plano-de-normalização-do-inventário) para os dados já recebidos no Inform, antes de ampliar a coleta por consultas remotas.
 
 ### Entrega 3 — Consultas remotas
+
+Avaliação inicial registrada em [consultas remotas por perfil](backend/docs/REMOTE_COLLECTION_PLAN.md).
+Primeira entrega implementada: `GetParameterNames` delimitado a DeviceInfo e
+`GetParameterValues` de modelo, firmware e hardware para o perfil Huawei homologado.
+Inclui operações/tentativas persistidas, expiração, autorização, correlação,
+idempotência e origem por campo. Consulte [escopo, comandos e limitações](backend/docs/READ_QUERIES.md).
+Ainda não inclui coleta automática, retentativas ou outros perfis.
 
 Objetivos:
 

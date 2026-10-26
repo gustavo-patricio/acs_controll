@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from acs.api.schemas.cpes import CpeResponse, EventListResponse, SessionListResponse
+from acs.api.schemas.inventory import CpeInventoryResponse
 from acs.application.services.cpe_inventory import (
     CpeInventoryService,
     CpeNotFound,
@@ -59,6 +60,8 @@ def inventory_request(
 
 def create_router(
     get_service: Callable[[Request], Awaitable[CpeInventoryService | None]],
+    *,
+    authentication_required: bool = True,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/v1",
@@ -69,7 +72,9 @@ def create_router(
                 "model": InventoryError,
                 "description": "Permission denied or HTTPS required",
             },
-        },
+        }
+        if authentication_required
+        else {},
     )
 
     @router.get(
@@ -77,8 +82,12 @@ def create_router(
         response_model=CpePage,
         summary="List registered CPEs",
         description=(
-            "Development/test only. Requires HTTPS and inventory:read permission. "
-            "Exact, case-sensitive filters are combined with AND. "
+            (
+                "Development/test only. Requires HTTPS and inventory:read permission. "
+                if authentication_required
+                else "Development/test only. Anonymous read access explicitly enabled. "
+            )
+            + "Exact, case-sensitive filters are combined with AND. "
             "Ordered by last_seen descending, then id ascending. "
             "last_seen is the last accepted Inform, not proof the CPE is online."
         ),
@@ -116,6 +125,27 @@ def create_router(
     ) -> CpeResponse:
         with inventory_request(service, response) as inventory:
             return CpeResponse.model_validate(await inventory.get_cpe(cpe_id))
+
+    @router.get(
+        "/cpes/{cpe_id}/inventory",
+        response_model=CpeInventoryResponse,
+        responses=errors,
+        summary="Consultar inventário normalizado e sua origem",
+        description=(
+            "Valores persistidos, origem do último valor válido e última observação de cada campo. "
+            "Campos ausentes não indicam falta de suporte. Capacidades sem evidência ficam unknown. "
+            "Não consulta a CPE, não dispara RPCs e não classifica online/offline."
+        ),
+    )
+    async def get_inventory(
+        cpe_id: UUID,
+        response: Response,
+        service: Annotated[CpeInventoryService | None, Depends(get_service)],
+    ) -> CpeInventoryResponse:
+        with inventory_request(service, response) as inventory:
+            return CpeInventoryResponse.model_validate(
+                await inventory.get_inventory(cpe_id)
+            )
 
     @router.get(
         "/cpes/{cpe_id}/sessions",

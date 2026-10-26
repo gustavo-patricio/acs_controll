@@ -20,7 +20,7 @@ class CwmpSession:
     cpe_id: UUID
     rpc_id: str
     version: str
-    state: Literal["awaiting_empty", "completed"]
+    state: Literal["awaiting_empty", "awaiting_response", "completed"]
     expires_at: datetime
 
     def require_active(self, now: datetime) -> None:

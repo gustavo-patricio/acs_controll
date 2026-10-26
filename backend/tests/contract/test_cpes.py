@@ -19,6 +19,11 @@ from acs.application.services.cpe_inventory import (
     SessionPage,
     SessionSummary,
 )
+from acs.domain.cpe.inventory_view import (
+    CpeInventoryView,
+    InventoryFields,
+    InventoryFieldView,
+)
 from acs.settings import Settings
 from auth_support import ADMIN
 from auth_support import admin_app as create_app
@@ -26,6 +31,18 @@ from auth_support import authorized_client as AsyncClient
 
 
 class InventoryStub:
+    async def get_inventory(self, cpe_id: UUID) -> CpeInventoryView:
+        cpe = await self.get_cpe(cpe_id)
+        return CpeInventoryView(
+            cpe_id,
+            cpe.last_seen,
+            InventoryFields(
+                InventoryFieldView(cpe.model),
+                InventoryFieldView(cpe.firmware),
+                InventoryFieldView(cpe.hardware),
+            ),
+        )
+
     async def get_cpe(self, cpe_id: UUID) -> CpeSummary:
         now = datetime.now(UTC)
         return CpeSummary(

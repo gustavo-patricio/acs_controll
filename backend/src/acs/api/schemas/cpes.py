@@ -27,7 +27,7 @@ class SessionResponse(BaseModel):
     id: UUID
     cpe_id: UUID
     version: str
-    state: Literal["awaiting_empty", "completed"]
+    state: Literal["awaiting_empty", "awaiting_response", "completed"]
     started_at: AwareDatetime
     expires_at: AwareDatetime
     completed_at: AwareDatetime | None

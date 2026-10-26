@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:cwmp="urn:dslforum-org:cwmp-1-0"
+ xmlns:enc="http://schemas.xmlsoap.org/soap/encoding/">
+ <soap:Header><cwmp:ID soap:mustUnderstand="1">ANON-GPN-001</cwmp:ID></soap:Header>
+ <soap:Body><cwmp:GetParameterNamesResponse>
+  <ParameterList enc:arrayType="cwmp:ParameterInfoStruct[3]">
+   <ParameterInfoStruct><Name>InternetGatewayDevice.DeviceInfo.HardwareVersion</Name><Writable>false</Writable></ParameterInfoStruct>
+   <ParameterInfoStruct><Name>InternetGatewayDevice.DeviceInfo.ModelName</Name><Writable>false</Writable></ParameterInfoStruct>
+   <ParameterInfoStruct><Name>InternetGatewayDevice.DeviceInfo.SoftwareVersion</Name><Writable>false</Writable></ParameterInfoStruct>
+  </ParameterList>
+ </cwmp:GetParameterNamesResponse></soap:Body>
+</soap:Envelope>

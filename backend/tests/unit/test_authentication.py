@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from acs.api.app import create_app as admin_app
 from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.application.services.inform import InformService
+from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
 from acs.cwmp.http.app import create_app as cwmp_app
 from acs.cwmp.soap.inform import parse_inform
 from acs.domain.security import AccessDenied
@@ -62,7 +63,7 @@ async def test_services_cannot_authorize_anonymous_or_wrong_identity(
             replace(ADMIN, permissions=frozenset())
         ).list_cpes()
     inform = parse_inform(inform_xml)
-    service = InformService(MemoryRepository())
+    service = InformService(MemoryRepository(), GenericInventoryNormalizer())
     with pytest.raises(AccessDenied):
         await service.receive(inform, None, principal=ADMIN)
     with pytest.raises(AccessDenied):
@@ -97,7 +98,10 @@ async def test_missing_and_malformed_credentials_are_challenged(
             "acs-admin",
         ),
         (
-            cwmp_app(InformService(MemoryRepository()), StubAuthenticator()),
+            cwmp_app(
+                InformService(MemoryRepository(), GenericInventoryNormalizer()),
+                StubAuthenticator(),
+            ),
             "/cwmp",
             "POST",
             "acs-cpe",
@@ -127,7 +131,10 @@ async def test_plain_http_and_forwarded_header_cannot_bypass_tls(
             "GET",
         ),
         (
-            cwmp_app(InformService(MemoryRepository()), StubAuthenticator()),
+            cwmp_app(
+                InformService(MemoryRepository(), GenericInventoryNormalizer()),
+                StubAuthenticator(),
+            ),
             "/cwmp",
             "POST",
         ),
@@ -154,7 +161,10 @@ async def test_openapi_security_and_public_liveness() -> None:
             "AdminBasic",
         ),
         (
-            cwmp_app(InformService(MemoryRepository()), StubAuthenticator()),
+            cwmp_app(
+                InformService(MemoryRepository(), GenericInventoryNormalizer()),
+                StubAuthenticator(),
+            ),
             "/cwmp",
             "CpeBasic",
         ),

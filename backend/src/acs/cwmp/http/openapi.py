@@ -24,7 +24,7 @@ INFORM_EXAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 
 REQUEST_BODY = {
     "required": False,
-    "description": "SOAP Inform XML, or an entirely empty body to finish the session.",
+    "description": "Inform ou resposta de consulta em SOAP/XML; POST vazio continua a sessão e pode receber um RPC pendente.",
     "content": {
         "text/xml": {
             "schema": {"type": "string"},
@@ -42,7 +42,7 @@ RESPONSES: dict[int | str, dict[str, Any]] = {
         "description": "HTTPS required or credentials do not match the Inform identity."
     },
     200: {
-        "description": "SOAP InformResponse with MaxEnvelopes=1; sets session cookie.",
+        "description": "InformResponse com MaxEnvelopes=1 e cookie, ou GetParameterNames/GetParameterValues pendente no POST vazio.",
         "content": {"text/xml": {"schema": {"type": "string"}}},
     },
     204: {

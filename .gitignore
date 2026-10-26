@@ -16,3 +16,6 @@ __pycache__/
 
 # Local TLS private keys and certificates
 .tls/
+
+# Local anonymized evidence, reviewed before promotion to test fixtures
+.captures/

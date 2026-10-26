@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -18,7 +19,20 @@ from acs.application.services.cpe_inventory import (
     SessionPage,
     SessionSummary,
 )
-from acs.infrastructure.database.cwmp_models import Cpe, CwmpEvent, CwmpSessionRow
+from acs.domain.cpe.inventory import InvalidReason
+from acs.domain.cpe.inventory_view import (
+    CpeInventoryView,
+    InventoryFields,
+    InventoryFieldView,
+    LastObservation,
+    ValueProvenance,
+)
+from acs.infrastructure.database.cwmp_models import (
+    Cpe,
+    CpeInventoryField,
+    CwmpEvent,
+    CwmpSessionRow,
+)
 from acs.infrastructure.database.database import Database
 
 
@@ -58,6 +72,60 @@ class PostgresCpeInventoryRepository:
         async with self._cpe_snapshot(cpe_id) as session:
             row = (await session.scalars(select(Cpe).where(Cpe.id == cpe_id))).one()
             return self._summary(row)
+
+    @staticmethod
+    def _field(value: str | None, row: CpeInventoryField | None) -> InventoryFieldView:
+        if row is None:
+            return InventoryFieldView(value)
+        provenance = None
+        if row.value_received_at is not None:
+            # Database constraints require all members of the value group together.
+            assert row.value_source_parameter is not None
+            assert row.value_profile_id is not None
+            assert row.value_profile_version is not None
+            provenance = ValueProvenance(
+                row.value_source_parameter,
+                row.value_profile_id,
+                row.value_profile_version,
+                row.value_received_at,
+                cast(Literal["Inform", "GetParameterValues"], row.value_source_method),
+                row.value_operation_id,
+            )
+        observation = LastObservation(
+            cast(Literal["valid", "invalid"], row.state),
+            row.source_parameter,
+            row.profile_id,
+            row.profile_version,
+            row.observed_at,
+            cast(InvalidReason | None, row.invalid_reason),
+            cast(Literal["Inform", "GetParameterValues"], row.source_method),
+            row.operation_id,
+        )
+        return InventoryFieldView(value, provenance, observation)
+
+    async def get_inventory(self, cpe_id: UUID) -> CpeInventoryView:
+        # Values and metadata must share one snapshot while Informs keep arriving.
+        async with self._cpe_snapshot(cpe_id) as session:
+            cpe = (await session.scalars(select(Cpe).where(Cpe.id == cpe_id))).one()
+            metadata = {
+                row.field_name: row
+                for row in (
+                    await session.scalars(
+                        select(CpeInventoryField).where(
+                            CpeInventoryField.cpe_id == cpe_id
+                        )
+                    )
+                ).all()
+            }
+            return CpeInventoryView(
+                cpe_id,
+                cpe.last_seen,
+                InventoryFields(
+                    model=self._field(cpe.model, metadata.get("model")),
+                    firmware=self._field(cpe.firmware, metadata.get("firmware")),
+                    hardware=self._field(cpe.hardware, metadata.get("hardware")),
+                ),
+            )
 
     async def list_sessions(self, cpe_id: UUID, limit: int, offset: int) -> SessionPage:
         async with self._cpe_snapshot(cpe_id) as session:

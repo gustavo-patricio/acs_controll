@@ -3,6 +3,8 @@
 ## Escopo e decisões
 
 Esta entrega utiliza contas locais no PostgreSQL e HTTP Basic **somente sobre HTTPS**.
+Para desenvolver o frontend antes do login, há uma exceção explícita e temporária
+de leitura anônima do inventário, descrita abaixo.
 É a primeira etapa de autenticação, não uma plataforma de identidade pronta para
 produção nem uma implementação completa dos requisitos RF-001 a RF-007.
 Nenhum provedor OIDC foi definido. A interface de autenticação da aplicação permite
@@ -40,6 +42,9 @@ ACS já possa ser exposto publicamente.
   continuam com HttpOnly e Secure sobre HTTPS. Sessões anônimas existentes não
   podem ser continuadas; elas permanecem como registros históricos.
 - Os papéis administrativos `administrator` e `support` concedem `inventory:read`.
+  `administrator` também concede `cpe:query` para solicitar as
+  [consultas remotas por perfil](READ_QUERIES.md). Criação e acompanhamento de
+  operações exigem autenticação mesmo com inventário anônimo no laboratório.
   Somente `administrator` também concede `cpe_accounts:write`, utilizada pelas
   rotas temporárias de contas CPE quando habilitadas. O papel `pending` não
   concede acesso. Cada caso de uso do inventário verifica a permissão; um serviço sem
@@ -84,6 +89,47 @@ Ativação, alteração de papel e cadastro de administradores continuam fora da
 Esses comandos locais são privilegiados: restrinja o acesso ao sistema operacional
 e ao banco. A saída contém apenas ação, UUID da conta e categoria; ela ainda não
 constitui uma trilha persistente de auditoria administrativa.
+
+## Consultas sem login durante o desenvolvimento do frontend
+
+Para adiar o login do frontend, defina no `backend/.env` e reinicie a API:
+
+```dotenv
+ACS_API_ALLOW_ANONYMOUS_INVENTORY=true
+```
+
+Essa opção tem padrão `false` e só libera consultas em `development` ou `test`,
+com SQL echo desabilitado. As seguintes rotas deixam de exigir credenciais:
+
+- `GET /api/v1/cpes`
+- `GET /api/v1/cpes/{cpe_id}`
+- `GET /api/v1/cpes/{cpe_id}/sessions`
+- `GET /api/v1/cpes/{cpe_id}/events`
+- `GET /api/v1/cpes/{cpe_id}/inventory`
+
+O Swagger remove a exigência de autenticação dessas operações. A aplicação aceita
+as leituras anônimas por HTTP ou HTTPS; o comando Uvicorn configurado com TLS
+continua atendendo somente HTTPS. Não é necessário mudar o servidor TLS para usar
+essa opção. Exemplo com o certificado local:
+
+```bash
+curl --cacert .tls/server.crt https://127.0.0.1:8000/api/v1/cpes
+```
+
+Qualquer cliente que alcance essas rotas poderá ler o inventário enquanto o modo
+estiver habilitado. Use apenas no ambiente de desenvolvimento com acesso de rede
+restrito. A opção não configura CORS: se o frontend estiver em outra origem,
+a origem autorizada deverá ser configurada separadamente.
+
+O serviço de aplicação continua exigindo a permissão de leitura. O adaptador
+HTTP fornece uma identidade interna somente de leitura, de UUID zero, para
+identificar esse modo nos logs. Não é criada uma conta administrativa no banco.
+As rotas de criação/exclusão de contas CPE continuam exigindo administrador e
+HTTPS; o receptor `/cwmp` mantém a autenticação das CPEs.
+
+Para retomar a autenticação do inventário, defina a opção como `false` e reinicie
+a API. As mesmas rotas passam a exigir HTTP Basic sobre HTTPS e `inventory:read`
+novamente. Produção e homologação não aceitam essa liberação temporária.
 
 ## API temporária de contas CPE
 
@@ -174,7 +220,7 @@ Configure nas CPEs:
 
 - **ACS URL:** `https://IP_OU_DNS_DO_ACS:7547/cwmp`, com certificado confiável.
 - **ACS User Name:** `acs_bancada` (com sublinhado).
-- **ACS Password:** a senha definida no comando, repetida nos equipamentos.
+- **ACS Password:** a senha definida no cadastro local, repetida nos equipamentos autorizados.
 - **Connection Request:** os campos não são usados nesta entrega.
 
 Na bancada atual, a URL configurada é `https://192.168.18.7:7547/cwmp`.
@@ -207,6 +253,12 @@ houver contas compartilhadas, evitando sua remoção silenciosa.
 
 ## HTTPS e validação em bancada
 
+Para o laboratório atual com WSL em modo espelhado e endereço `192.168.18.7`,
+siga o [guia de rede espelhada](WSL_MIRRORED.md). Ele utiliza certificados em
+`.tls/mirrored/`, com SAN para o IP da LAN, e exporta `.tls/lan-ca.crt` para
+importação nos clientes. Os exemplos genéricos abaixo com `.tls/server.*`
+pressupõem que esses arquivos tenham sido provisionados para o endereço usado.
+
 Providencie um certificado cujo SAN corresponda ao IP ou nome DNS configurado na
 CPE, emitido por uma autoridade certificadora (CA) em que o equipamento confie.
 Coloque certificado e chave em `backend/.tls/`, diretório ignorado pelo Git, e
@@ -218,8 +270,9 @@ uv run uvicorn acs.cwmp.http.app:app --host 0.0.0.0 --port 7547 --no-access-log 
 uv run uvicorn acs.api.app:app --host 127.0.0.1 --port 8000 --no-access-log --no-proxy-headers --ssl-certfile .tls/server.crt --ssl-keyfile .tls/server.key
 ```
 
-O portproxy existente no Windows encaminha TCP: ele transporta TLS sem descriptografar
-o tráfego. Restrinja o firewall do Windows aos equipamentos autorizados no laboratório.
+Em modo NAT, o portproxy do Windows encaminha TCP e transporta TLS sem descriptografar
+o tráfego. Em modo espelhado, use o acesso direto e remova a regra antiga do ACS.
+Restrinja o firewall aos equipamentos autorizados no laboratório.
 Na CPE, use `https://IP_DO_WINDOWS_NA_LAN:7547/cwmp` e configure **ACS Username e
 Password**, não os campos de Connection Request. Nunca reutilize as credenciais
 do provedor anterior. Connection Request continua sem implementação.
@@ -229,7 +282,8 @@ clique em **Authorize** usando uma conta administrativa. O Swagger CWMP na porta
 7547 possui seu próprio **Authorize**, que recebe a conta da CPE. A identidade do
 Inform de exemplo precisa corresponder à conta quando ela é individual. Por padrão, o Swagger não mantém
 a autorização ao recarregar a página. `GET /health`, a documentação e o OpenAPI
-continuam públicos; as rotas de inventário exigem autenticação.
+continuam públicos; as rotas de inventário exigem autenticação por padrão,
+exceto quando a leitura anônima de desenvolvimento é explicitamente habilitada.
 
 Para consultar o inventário pela linha de comando, deixe o curl solicitar a senha,
 sem incluí-la no histórico do terminal. Informe o arquivo da CA quando ela não
@@ -246,7 +300,7 @@ aceitar a indicação de HTTPS encaminhada por cabeçalho.
 
 ## Respostas e compatibilidade
 
-- HTTPS sem credenciais válidas: `401` e `WWW-Authenticate: Basic`.
+- Rotas protegidas por HTTPS sem credenciais válidas: `401` e `WWW-Authenticate: Basic`.
 - HTTP sem criptografia em rota protegida ou identidade da CPE incompatível:
   `403`, sem confirmação do Inform. Um servidor Uvicorn configurado somente para
   TLS pode rejeitar HTTP antes que a requisição alcance a aplicação.
@@ -259,8 +313,8 @@ aceitar a indicação de HTTPS encaminhada por cabeçalho.
 Esses são erros HTTP de autenticação/autorização, não novos faults CWMP.
 Os faults SOAP 8000/8003 permanecem inalterados. O receptor não habilita mais CORS
 com origem curinga: o Swagger na mesma origem funciona sem permitir sites arbitrários.
-O teste anterior com a Huawei validou somente HTTP anônimo. HTTPS/Basic e a confiança
-no certificado ainda exigem um novo teste em bancada para o firmware utilizado.
+O teste de bancada de 26/10/2026 validou HTTPS/Basic e os dois RPCs de leitura
+na Huawei EG8145X6-10 / V5R022C00S364; veja [evidências e limites](READ_QUERIES.md).
 Testes com simuladores não comprovam conformidade CWMP completa nem compatibilidade
 da autenticação com a Huawei.
 

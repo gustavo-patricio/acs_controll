@@ -68,7 +68,7 @@ class PostgresAuthenticator:
                     else frozenset[str]()
                 )
                 if kind == "admin" and account.role == "administrator":
-                    permissions = permissions | {"cpe_accounts:write"}
+                    permissions = permissions | {"cpe_accounts:write", "cpe:query"}
                 return Principal(
                     account.id,
                     kind,

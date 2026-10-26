@@ -2,15 +2,22 @@
 
 from datetime import datetime
 from typing import Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from acs.domain.cpe.inform import Inform
+from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
-from acs.infrastructure.database.cwmp_models import Cpe, CwmpEvent, CwmpSessionRow
+from acs.infrastructure.database.cwmp_models import (
+    Cpe,
+    CpeInventoryField,
+    CwmpEvent,
+    CwmpSessionRow,
+)
 from acs.infrastructure.database.database import Database
 
 
@@ -20,28 +27,54 @@ def session_value(row: CwmpSessionRow) -> CwmpSession:
         row.cpe_id,
         row.rpc_id,
         row.version,
-        cast(Literal["awaiting_empty", "completed"], row.state),
+        cast(Literal["awaiting_empty", "awaiting_response", "completed"], row.state),
         row.expires_at,
-    )
-
-
-def inventory_value(inform: Inform, suffix: str) -> str | None:
-    allowed = {
-        f"{root}.DeviceInfo.{suffix}" for root in ("Device", "InternetGatewayDevice")
-    }
-    return next(
-        (
-            p.value
-            for p in inform.parameters
-            if p.name in allowed and len(p.value) <= 256
-        ),
-        None,
     )
 
 
 class PostgresInformRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    @staticmethod
+    async def update_inventory(
+        db: AsyncSession, cpe_id: UUID, inventory: NormalizedInventory
+    ) -> None:
+        # The CPE upsert holds its row lock until commit. All writers of field
+        # metadata must hold that same lock, so values and provenance move together.
+        values: dict[str, str] = {}
+        for name, observation in (
+            ("model", inventory.model),
+            ("firmware", inventory.firmware),
+            ("hardware", inventory.hardware),
+        ):
+            if observation.state == "not_reported":
+                continue
+            row = await db.get(CpeInventoryField, (cpe_id, name))
+            if row is not None and inventory.received_at <= row.observed_at:
+                continue
+            if row is None:
+                row = CpeInventoryField(cpe_id=cpe_id, field_name=name)
+                db.add(row)
+            row.state = observation.state
+            row.source_parameter = observation.source_parameter
+            row.profile_id = inventory.profile_id
+            row.profile_version = inventory.profile_version
+            row.observed_at = inventory.received_at
+            row.invalid_reason = observation.reason
+            row.source_method = inventory.source_method
+            row.operation_id = inventory.operation_id
+            if observation.state == "valid":
+                assert observation.value is not None
+                values[name] = observation.value
+                row.value_source_parameter = observation.source_parameter
+                row.value_profile_id = inventory.profile_id
+                row.value_profile_version = inventory.profile_version
+                row.value_received_at = inventory.received_at
+                row.value_source_method = inventory.source_method
+                row.value_operation_id = inventory.operation_id
+        if values:
+            await db.execute(update(Cpe).where(Cpe.id == cpe_id).values(**values))
 
     async def accept(
         self,
@@ -50,6 +83,8 @@ class PostgresInformRepository:
         now: datetime,
         expires_at: datetime,
         continuing: bool,
+        *,
+        inventory: NormalizedInventory,
     ) -> CwmpSession:
         try:
             async with self.database.session() as db, db.begin():
@@ -88,9 +123,9 @@ class PostgresInformRepository:
                     serial_number=d.serial_number,
                     first_seen=now,
                     last_seen=now,
-                    model=inventory_value(inform, "ModelName"),
-                    firmware=inventory_value(inform, "SoftwareVersion"),
-                    hardware=inventory_value(inform, "HardwareVersion"),
+                    model=None,
+                    firmware=None,
+                    hardware=None,
                 )
                 stmt = stmt.on_conflict_do_update(
                     constraint="uq_cpes_identity",
@@ -99,12 +134,10 @@ class PostgresInformRepository:
                         "last_seen": func.greatest(
                             Cpe.last_seen, stmt.excluded.last_seen
                         ),
-                        "model": func.coalesce(stmt.excluded.model, Cpe.model),
-                        "firmware": func.coalesce(stmt.excluded.firmware, Cpe.firmware),
-                        "hardware": func.coalesce(stmt.excluded.hardware, Cpe.hardware),
                     },
                 ).returning(Cpe.id)
                 cpe_id = (await db.execute(stmt)).scalar_one()
+                await self.update_inventory(db, cpe_id, inventory)
                 row = CwmpSessionRow(
                     id=uuid4(),
                     cpe_id=cpe_id,

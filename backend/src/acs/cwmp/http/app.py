@@ -10,15 +10,22 @@ from fastapi.security.http import HTTPBase
 
 from acs.application.services.authentication import Authenticator
 from acs.application.services.inform import InformService
+from acs.application.services.queries import QueryService
+from acs.cwmp.compatibility.evidence import anonymized_inform
+from acs.cwmp.compatibility.profiles import ProfileInventoryNormalizer
+from acs.cwmp.compatibility.queries import HuaweiQueryPolicy
 from acs.cwmp.http.openapi import REQUEST_BODY, RESPONSES
 from acs.cwmp.soap.inform import (
+    CWMP,
     MAX_BODY,
     BadEnvelope,
     RpcFault,
+    parse_envelope,
     parse_inform,
     serialize_fault,
     serialize_inform_response,
 )
+from acs.cwmp.soap.queries import parse_query_reply, serialize_query
 from acs.domain.events.session import InvalidSession, StorageUnavailable
 from acs.domain.security import (
     AccessDenied,
@@ -27,20 +34,28 @@ from acs.domain.security import (
 )
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import PostgresInformRepository
-from acs.infrastructure.observability.cwmp import configure_logging, record
+from acs.infrastructure.database.queries import PostgresQueryRepository
+from acs.infrastructure.observability.cwmp import (
+    configure_logging,
+    record,
+    record_inventory,
+)
 from acs.infrastructure.security.authentication import PostgresAuthenticator
 from acs.infrastructure.security.http import InsecureTransport, authenticate_request
+from acs.infrastructure.storage.inform_capture import FileInformCapture
 from acs.settings import get_settings
 
 COOKIE = "acs_cwmp_session"
 
 
 def create_app(
-    service: InformService | None = None, authenticator: Authenticator | None = None
+    service: InformService | None = None,
+    authenticator: Authenticator | None = None,
+    queries: QueryService | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-        nonlocal service, authenticator
+        nonlocal service, authenticator, queries
         if service is not None:
             yield
             return
@@ -53,8 +68,25 @@ def create_app(
                 "CWMP receiver requires development/test mode and SQL echo disabled"
             )
         configure_logging()
+        capture = None
+        if (
+            settings.cwmp_capture_cpe_id is not None
+            and settings.cwmp_capture_output is not None
+        ):
+            capture = FileInformCapture(
+                settings.cwmp_capture_cpe_id,
+                settings.cwmp_capture_output,
+                settings.cwmp_capture_seconds,
+                anonymized_inform,
+            )
         database = Database(settings)
-        service = InformService(PostgresInformRepository(database))
+        queries = QueryService(PostgresQueryRepository(database, HuaweiQueryPolicy()))
+        service = InformService(
+            PostgresInformRepository(database),
+            ProfileInventoryNormalizer(),
+            capture=capture,
+            on_inventory_updated=record_inventory,
+        )
         authenticator = PostgresAuthenticator(
             database, allow_shared_cpe=settings.cwmp_allow_shared_credentials
         )
@@ -64,6 +96,7 @@ def create_app(
             await database.close()
             service = None
             authenticator = None
+            queries = None
 
     app = FastAPI(title="ACS CWMP receiver", lifespan=lifespan, redoc_url=None)
 
@@ -71,10 +104,11 @@ def create_app(
         "/cwmp",
         response_class=Response,
         tags=["CWMP"],
-        summary="Receive Inform or complete a CWMP session",
+        summary="Receber Inform, continuar sessão ou receber resposta de consulta",
         description=(
             "Development/test only. Send the synthetic Inform example as text/xml. "
             "Then clear the body completely and execute again within 60 seconds. "
+            "A pending authenticated read operation may return a GetParameterNames or GetParameterValues RPC. "
             "The browser automatically sends the HttpOnly session cookie on the "
             "same origin; do not enter it manually. Whitespace is not an empty body. "
             "Requests persist data in the configured PostgreSQL database."
@@ -126,7 +160,23 @@ def create_app(
         cookie = request.cookies.get(COOKIE)
         try:
             if not body:
-                session = await service.finish(cookie, principal=principal)
+                if queries is not None:
+                    session, command = await queries.exchange(cookie, None, principal)
+                    if command is not None:
+                        record(
+                            "query_dispatched",
+                            request_id,
+                            200,
+                            session,
+                            operation_id=command.operation_id,
+                        )
+                        return Response(
+                            serialize_query(command),
+                            media_type="text/xml",
+                            headers=headers,
+                        )
+                else:
+                    session = await service.finish(cookie, principal=principal)
                 response = Response(status_code=204, headers=headers)
                 response.delete_cookie(COOKIE, path="/cwmp")
                 record("session_completed", request_id, 204, session)
@@ -136,7 +186,16 @@ def create_app(
                 != "text/xml"
             ):
                 return error(415)
-            inform = parse_inform(bytes(body))
+            payload = bytes(body)
+            _, rpc = parse_envelope(payload)
+            if rpc.tag != f"{{{CWMP}}}Inform" and queries is not None:
+                reply = parse_query_reply(payload)
+                session, _ = await queries.exchange(cookie, reply, principal)
+                response = Response(status_code=204, headers=headers)
+                response.delete_cookie(COOKIE, path="/cwmp")
+                record("query_response_processed", request_id, 204, session)
+                return response
+            inform = parse_inform(payload)
             session, token = await service.receive(inform, cookie, principal=principal)
             response = Response(
                 serialize_inform_response(inform.rpc_id),

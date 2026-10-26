@@ -17,7 +17,12 @@ def configure_logging() -> None:
 
 
 def record(
-    event: str, request_id: str, status: int, account_id: UUID | None = None
+    event: str,
+    request_id: str,
+    status: int,
+    account_id: UUID | None = None,
+    *,
+    operation_id: UUID | None = None,
 ) -> None:
     data: dict[str, str | int] = {
         "event": event,
@@ -26,4 +31,6 @@ def record(
     }
     if account_id is not None:
         data["account_id"] = str(account_id)
+    if operation_id is not None:
+        data["operation_id"] = str(operation_id)
     logger.info(json.dumps(data, separators=(",", ":")))
