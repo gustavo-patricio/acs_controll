@@ -753,3 +753,19 @@ Produzir a especificação da Entrega 1 contendo:
 | Versão | Alteração |
 | --- | --- |
 | 0.1 | Criação da modelagem backend-first, uso do FreeACS como referência e definição do roadmap técnico inicial |
+
+## 25. Coleta de conectividade e potência óptica
+
+A entrega de telemetria acrescenta descoberta GPN controlada e GPV de parâmetros
+permitidos por perfil, com persistência por interface e campo e endpoint REST
+`GET /api/v1/cpes/{cpe_id}/telemetry`. A WAN alvo é Internet/PPPoE. O contrato
+preserva valores válidos e sua procedência, distinguindo leituras inválidas,
+vazias e unidades não confirmadas. Veja [decisões, compatibilidade, comandos e
+limitações](backend/docs/WAN_OPTICAL_TELEMETRY.md).
+
+## Evolução da compatibilidade por evidências
+
+O [desenho de referência](backend/docs/CPE_COMPATIBILITY_ARCHITECTURE.md) define coleta persistente,
+pacotes de evidência, catálogo observado, perfis declarativos versionados e
+reprodução offline. O documento distingue a base existente das próximas entregas
+e estabelece critérios de homologação por campo/modelo/firmware.

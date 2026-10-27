@@ -21,6 +21,7 @@ dependencies = [
 acs-db-check = "acs.infrastructure.database.check:main"
 acs-account = "acs.infrastructure.security.accounts:main"
 acs-query = "acs.infrastructure.database.query_cli:main"
+acs-evidence = "acs.infrastructure.storage.evidence_cli:main"
 
 [tool.uv.build-backend]
 module-name = "acs"

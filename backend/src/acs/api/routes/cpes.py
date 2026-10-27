@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from acs.api.schemas.cpes import CpeResponse, EventListResponse, SessionListResponse
 from acs.api.schemas.inventory import CpeInventoryResponse
+from acs.api.schemas.telemetry import CpeTelemetryResponse
 from acs.application.services.cpe_inventory import (
     CpeInventoryService,
     CpeNotFound,
@@ -76,6 +77,26 @@ def create_router(
         if authentication_required
         else {},
     )
+
+    @router.get(
+        "/cpes/{cpe_id}/telemetry",
+        response_model=CpeTelemetryResponse,
+        summary="Consultar endereços WAN, DNS, MAC e potência óptica",
+        description="Lê observações persistidas; não dispara RPCs. Coleções separadas por interface, com origem e horário. Valores ausentes não significam recurso não suportado.",
+        responses={
+            404: {"model": InventoryError, "description": "CPE não encontrada"},
+            503: {"model": InventoryError, "description": "Telemetria indisponível"},
+        },
+    )
+    async def get_telemetry(
+        cpe_id: UUID,
+        response: Response,
+        service: Annotated[CpeInventoryService | None, Depends(get_service)],
+    ) -> CpeTelemetryResponse:
+        with inventory_request(service, response) as active:
+            return CpeTelemetryResponse.model_validate(
+                await active.get_telemetry(cpe_id)
+            )
 
     @router.get(
         "/cpes",

@@ -129,3 +129,17 @@ quando `ModelName` não for informado.
 O [plano original](REMOTE_COLLECTION_PLAN.md) registra a avaliação dos RPCs.
 A [primeira entrega implementada](READ_QUERIES.md) consulta DeviceInfo pelo perfil
 Huawei, com operações persistidas e distinção entre observações Inform e GPV.
+
+## Coleta WAN e óptica
+
+A entrega de endereços IPv4/IPv6, MAC, DNS e potência óptica usa descoberta
+controlada e consultas por perfil. Consulte [contrato, comandos, evidências e
+limitações](WAN_OPTICAL_TELEMETRY.md). O endpoint
+`GET /api/v1/cpes/{cpe_id}/telemetry` está disponível no Swagger da API.
+
+## Evolução da compatibilidade por evidências
+
+O [desenho de referência](CPE_COMPATIBILITY_ARCHITECTURE.md) define coleta persistente,
+pacotes de evidência, catálogo observado, perfis declarativos versionados e
+reprodução offline. O documento distingue a base existente das próximas entregas
+e estabelece critérios de homologação por campo/modelo/firmware.

@@ -1,6 +1,7 @@
 """Allowlisted reconstruction of an Inform, never a copy of the request XML."""
 
 from datetime import UTC, datetime
+from typing import Literal
 from xml.etree import ElementTree as ET
 
 from acs.cwmp.soap.inform import CWMP, ENC, SOAP, XSI
@@ -17,7 +18,12 @@ def safe_text(value: str, limit: int) -> bool:
     return len(value) <= limit and all(char.isprintable() for char in value)
 
 
-def anonymized_inform(inform: Inform, received_at: datetime) -> bytes:
+def anonymized_inform(
+    inform: Inform,
+    received_at: datetime | None,
+    *,
+    source: Literal["accepted-inform", "offline-reconstruction"] = "accepted-inform",
+) -> bytes:
     """Retain basic inventory evidence; replace all session/device identifiers.
 
     The original xsi:type spelling is intentionally not retained: its namespace
@@ -40,8 +46,8 @@ def anonymized_inform(inform: Inform, received_at: datetime) -> bytes:
     )
     root.append(
         ET.Comment(
-            " ACS evidence v1; source=accepted-inform; "
-            f"received_at={received_at.astimezone(UTC).isoformat()}; "
+            f" ACS evidence v1; source={source}; "
+            f"received_at={received_at.astimezone(UTC).isoformat() if received_at else 'unknown'}; "
             f"parameters_received={len(inform.parameters)}; "
             f"parameters_retained={len(parameters)}; "
             "serial, RPC ID, events, time, counters and types are synthetic. "

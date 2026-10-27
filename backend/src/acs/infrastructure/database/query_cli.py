@@ -9,7 +9,12 @@ from uuid import UUID, uuid4
 
 from acs.cwmp.compatibility.queries import HuaweiQueryPolicy
 from acs.domain.events.session import StorageUnavailable
-from acs.domain.operations.query import QueryConflict, QueryKind, QueryNotFound
+from acs.domain.operations.query import (
+    QueryConflict,
+    QueryKind,
+    QueryNotFound,
+    QueryScope,
+)
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.queries import PostgresQueryRepository
 from acs.settings import get_settings
@@ -32,6 +37,8 @@ async def run(args: argparse.Namespace) -> None:
                 None,
                 "local",
                 datetime.now(UTC),
+                scope=cast(QueryScope, args.scope),
+                parameter_path=args.path,
             )
         print(
             json.dumps(
@@ -62,6 +69,14 @@ def main() -> None:
     )
     choice.add_argument("--operation-id", type=UUID)
     parser.add_argument("--key", type=UUID, help="Chave de idempotencia para criacao")
+    parser.add_argument(
+        "--scope",
+        choices=("device_info", "discovery", "wan", "optical"),
+        default="device_info",
+    )
+    parser.add_argument(
+        "--path", help="Subarvore permitida para descoberta sem valores"
+    )
     asyncio.run(run(parser.parse_args()))
 
 

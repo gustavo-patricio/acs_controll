@@ -130,3 +130,10 @@ Não foi observado novo Inform após o início do receptor nessa verificação;
 esse resultado confirma a leitura dos dados persistidos, não a conectividade atual
 da CPE. Os testes automatizados verificaram o recebimento e a leitura concorrente
 em PostgreSQL usando fixtures anonimizadas.
+
+## Coleta WAN e óptica
+
+A entrega de endereços IPv4/IPv6, MAC, DNS e potência óptica usa descoberta
+controlada e consultas por perfil. Consulte [contrato, comandos, evidências e
+limitações](WAN_OPTICAL_TELEMETRY.md). O endpoint
+`GET /api/v1/cpes/{cpe_id}/telemetry` está disponível no Swagger da API.

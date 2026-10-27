@@ -36,6 +36,7 @@ async def test_anonymous_inventory_is_read_only_and_documented(
     ) as client:
         schema = (await client.get("/openapi.json")).json()
         for route, template in (
+            (f"/api/v1/cpes/{identifier}/telemetry", "/api/v1/cpes/{cpe_id}/telemetry"),
             ("/api/v1/cpes", "/api/v1/cpes"),
             (f"/api/v1/cpes/{identifier}", "/api/v1/cpes/{cpe_id}"),
             (f"/api/v1/cpes/{identifier}/sessions", "/api/v1/cpes/{cpe_id}/sessions"),

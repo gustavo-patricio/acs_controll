@@ -121,3 +121,11 @@ Em 26/10/2026, a primeira entrega de [consultas remotas](READ_QUERIES.md) valido
 GPN e GPV nessa mesma combinação de modelo/firmware. GPV confirmou `ModelName`,
 `SoftwareVersion` e `HardwareVersion`; as fixtures dos resultados permitidos
 têm [origem e limites documentados](../tests/fixtures/cwmp/huawei_device_info_queries.md).
+
+## Perfil básico adicional da V5-V2
+
+O seletor também contém `huawei-eg8145v5-v2-v5r021c00s210`, versão `1`, prioridade
+`110`, vinculado à [evidência de Inform própria](../tests/fixtures/cwmp/huawei_eg8145v5_v2_v5r021c00s210.md).
+Aplica a mesma regra restrita de ProductClass quando ModelName estiver ausente.
+Isso não transfere a homologação WAN/óptica entre V5-V2 e X6-10; consulte o
+[estado da telemetria](WAN_OPTICAL_TELEMETRY.md).

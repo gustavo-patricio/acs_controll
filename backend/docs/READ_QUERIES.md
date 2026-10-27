@@ -1,20 +1,26 @@
-# Consultas remotas por perfil — primeira entrega
+# Consultas remotas por perfil
+
+A ampliação para descoberta WAN/óptica e leitura de telemetria está descrita em
+[Coleta WAN e óptica](WAN_OPTICAL_TELEMETRY.md). Os exemplos DeviceInfo abaixo
+continuam válidos com `scope: "device_info"` (padrão).
 
 Implementados `GetParameterNames` (GPN) e `GetParameterValues` (GPV) em
 SOAP 1.1/CWMP 1.0, com operações assíncronas persistidas. O suporte atual é
-restrito ao perfil `huawei-eg8145x6-10-v5r022c00s364`, versão `1`: fabricante
+restrito a perfis revisados. O perfil original é
+`huawei-eg8145x6-10-v5r022c00s364`, versão `1`: fabricante
 `Huawei Technologies Co., Ltd`, OUI `00259E`, ProductClass `EG8145X6-10` e firmware
-`V5R022C00S364`. Outros perfis retornam conflito; não há consulta genérica da árvore.
+`V5R022C00S364`. O inventário básico da EG8145V5-V2/V5R021C00S210 também
+tem perfil próprio. Identidades/firmwares fora dos perfis retornam conflito; não há consulta genérica da árvore.
 
 Referências: [TR-069 de maio de 2004, A.3.2.2 e A.3.2.3](https://www.broadband-forum.org/pdfs/tr-069-1-0-0.pdf)
 e [schema oficial CWMP 1.0](https://github.com/BroadbandForum/cwmp-data-models/blob/master/cwmp-1-0.xsd).
 
 ## Escopo e fluxo
 
-- GPV solicita somente `InternetGatewayDevice.DeviceInfo.ModelName`,
+- No escopo `device_info`, GPV solicita somente `InternetGatewayDevice.DeviceInfo.ModelName`,
   `InternetGatewayDevice.DeviceInfo.SoftwareVersion` e
   `InternetGatewayDevice.DeviceInfo.HardwareVersion`.
-- GPN solicita `InternetGatewayDevice.DeviceInfo.` com `NextLevel=true`, sem
+- Nesse mesmo escopo, GPN solicita `InternetGatewayDevice.DeviceInfo.` com `NextLevel=true`, sem
   recursão. Somente os três nomes acima e seus indicadores `Writable` são retidos.
   Outros nomes são descartados; descoberta não dispara automaticamente GPV.
 - A API recebe uma solicitação autenticada e registra uma operação `pending`.
@@ -34,6 +40,7 @@ As rotas estão na aplicação administrativa `acs.api.app:app`, em `/docs`:
 POST /api/v1/cpes/{cpe_id}/queries
 GET  /api/v1/cpes/{cpe_id}/queries/{operation_id}
 GET  /api/v1/cpes/{cpe_id}/inventory
+GET  /api/v1/cpes/{cpe_id}/telemetry
 ```
 
 Exemplo do POST (gere um UUID novo para cada nova intenção de consulta):
@@ -63,7 +70,7 @@ o conteúdo recebido; `503` para indisponibilidade. Consulte `/openapi.json`.
 
 ## Idempotência, prazos e falhas
 
-A chave é única por CPE. Reenviar a mesma chave e tipo retorna a operação original,
+A chave é única por CPE. Reenviar a mesma chave, tipo, escopo e caminho retorna a operação original,
 mesmo concluída. Uma nova consulta precisa de outra chave. Uma restrição parcial
 no PostgreSQL e bloqueio da CPE impedem duas operações ativas.
 
@@ -116,9 +123,9 @@ consistência entre sessão, operação e inventário. Não há dependência nov
 
 Limites: XML de até 1 MiB e profundidade 32, sem DTD, entidades ou recursos externos;
 até 128 nomes GPN e 16 entradas no parser GPV (a política exige exatamente os
-três nomes solicitados); nomes de até 256 caracteres; valores string de até
+nomes solicitados; são três em DeviceInfo); nomes de até 256 caracteres; valores string de até
 4096 no parser e 256 na normalização. Tipos XML são resolvidos pelo namespace.
-Nenhum XML bruto, valor inválido, texto de fault, senha, PPPoE ou parâmetro não
+Nenhum XML bruto, valor inválido, texto de fault, senha, usuário PPPoE ou parâmetro não
 permitido é persistido nos resultados ou colocado nos logs. Logs correlacionam
 requisição, sessão, CPE e operação por UUID. Na API, criação/leitura correlacionam
 o usuário autenticado e a operação; rejeições registram apenas ID e status seguros.
@@ -186,7 +193,8 @@ indisponibilidade e não deve motivar troca de senha sem diagnóstico.
 ## Próximas etapas
 
 Ampliar perfis somente com evidência anonimizada e testes: uptime com unidade,
-instâncias WAN/Wi-Fi e potência óptica. Ainda não há descoberta recursiva, coleta
+Wi-Fi e outros perfis. A coleta WAN/óptica evolui no guia vinculado acima.
+Ainda não há descoberta recursiva automática, coleta
 periódica automática, retentativas, múltiplas tentativas, worker de expiração,
 Connection Request, escrita de parâmetros, reboot ou firmware. Uma leitura recente
 é uma observação; online/offline ainda depende da janela configurável de RN-002.

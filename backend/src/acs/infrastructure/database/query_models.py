@@ -21,6 +21,10 @@ from acs.infrastructure.database.base import Base
 class QueryOperationRow(Base):
     __tablename__ = "query_operations"
     __table_args__ = (
+        CheckConstraint(
+            "(scope = 'device_info' AND parameter_path IS NULL) OR (scope = 'discovery' AND kind = 'get_parameter_names' AND parameter_path IS NOT NULL) OR (scope IN ('wan','optical') AND kind = 'get_parameter_values' AND parameter_path IS NOT NULL)",
+            name="scope",
+        ),
         UniqueConstraint("cpe_id", "idempotency_key", name="uq_query_idempotency"),
         CheckConstraint(
             "kind IN ('get_parameter_names', 'get_parameter_values')", name="kind"
@@ -44,6 +48,11 @@ class QueryOperationRow(Base):
     cpe_id: Mapped[UUID] = mapped_column(ForeignKey("cpes.id"))
     idempotency_key: Mapped[UUID]
     kind: Mapped[str] = mapped_column(String(32))
+    scope: Mapped[str] = mapped_column(String(32), server_default="device_info")
+    parameter_path: Mapped[str | None] = mapped_column(String(256))
+    requested_names: Mapped[list[str]] = mapped_column(
+        JSONB, server_default="[]", default=list
+    )
     state: Mapped[str] = mapped_column(String(16))
     profile_id: Mapped[str] = mapped_column(String(128))
     profile_version: Mapped[str] = mapped_column(String(32))

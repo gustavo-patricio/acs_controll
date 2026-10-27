@@ -8,6 +8,7 @@ from uuid import UUID
 from acs.domain.cpe.inform import Parameter
 
 QueryKind = Literal["get_parameter_names", "get_parameter_values"]
+QueryScope = Literal["device_info", "discovery", "wan", "optical"]
 QueryState = Literal["pending", "dispatched", "succeeded", "failed", "expired"]
 
 
@@ -36,6 +37,7 @@ class QueryPlan:
     names: tuple[str, ...]
     parameter_path: str
     next_level: bool = True
+    scope: QueryScope = "device_info"
 
 
 @dataclass(frozen=True)
@@ -83,3 +85,5 @@ class QueryOperation:
     fault_code: int | None
     result: tuple[QueryResultItem, ...] = field(repr=False)
     attempt_count: int = 0
+    scope: QueryScope = "device_info"
+    parameter_path: str | None = None

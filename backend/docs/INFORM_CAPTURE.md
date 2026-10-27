@@ -121,3 +121,8 @@ Os testes cobrem exclusão de dados sensíveis, reconstrução parseável, sele�
 CPE, prazo, permissões, concorrência, destino existente, falha de gravação,
 autenticação, autorização, XML inválido/XXE, rejeição do banco e o fluxo completo
 Inform/InformResponse/POST vazio em PostgreSQL com migrations em schema descartável.
+
+## Pacote de evidências offline
+
+A CLI `acs-evidence create/verify` transforma uma captura em pacote parcial
+com XML anonimizado e manifesto verificável. Consulte [comandos e limites](EVIDENCE_PACKAGE.md).

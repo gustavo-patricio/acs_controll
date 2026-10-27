@@ -1,0 +1,36 @@
+<?xml version='1.0' encoding='utf-8'?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0" xmlns:enc="http://schemas.xmlsoap.org/soap/encoding/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <!-- ACS evidence v1; source=accepted-inform; received_at=2026-10-26T23:30:05.007013+00:00; parameters_received=8; parameters_retained=2; serial, RPC ID, events, time, counters and types are synthetic. -->
+  <soap:Header>
+    <cwmp:ID soap:mustUnderstand="1">anonymized-inform-001</cwmp:ID>
+  </soap:Header>
+  <soap:Body>
+    <cwmp:Inform>
+      <DeviceId>
+        <Manufacturer>Huawei Technologies Co., Ltd</Manufacturer>
+        <OUI>00259E</OUI>
+        <ProductClass>EG8145V5-V2</ProductClass>
+        <SerialNumber>ANONYMIZED0001</SerialNumber>
+      </DeviceId>
+      <Event enc:arrayType="cwmp:EventStruct[1]">
+        <EventStruct>
+          <EventCode>2 PERIODIC</EventCode>
+          <CommandKey />
+        </EventStruct>
+      </Event>
+      <MaxEnvelopes>1</MaxEnvelopes>
+      <CurrentTime>2000-01-01T00:00:00Z</CurrentTime>
+      <RetryCount>0</RetryCount>
+      <ParameterList enc:arrayType="cwmp:ParameterValueStruct[2]">
+        <ParameterValueStruct>
+          <Name>InternetGatewayDevice.DeviceInfo.HardwareVersion</Name>
+          <Value xsi:type="xsd:string">2D7D.A</Value>
+        </ParameterValueStruct>
+        <ParameterValueStruct>
+          <Name>InternetGatewayDevice.DeviceInfo.SoftwareVersion</Name>
+          <Value xsi:type="xsd:string">V5R021C00S210</Value>
+        </ParameterValueStruct>
+      </ParameterList>
+    </cwmp:Inform>
+  </soap:Body>
+</soap:Envelope>

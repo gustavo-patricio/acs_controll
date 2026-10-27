@@ -84,10 +84,10 @@ async def test_inventory_view_contract_and_swagger() -> None:
             c
             == {
                 "device_support": "unknown",
-                "acs_implemented": False,
+                "acs_implemented": name in ("wan", "optical"),
                 "profile_validated": False,
             }
-            for c in data["capabilities"].values()
+            for name, c in data["capabilities"].items()
         )
         assert data["extensions"] == [] and data["remote_queries_available"] is True
         assert (

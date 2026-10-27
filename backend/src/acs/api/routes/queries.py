@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.security.http import HTTPBase
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from acs.application.services.authentication import Authenticator
 from acs.application.services.queries import QueryService
@@ -19,6 +19,7 @@ from acs.domain.operations.query import (
     QueryKind,
     QueryNotFound,
     QueryOperation,
+    QueryScope,
     QueryState,
 )
 from acs.domain.security import (
@@ -60,6 +61,8 @@ class QueryInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: QueryKind
     idempotency_key: UUID
+    scope: QueryScope = "device_info"
+    parameter_path: str | None = Field(default=None, max_length=256)
 
 
 class QueryItemResponse(BaseModel):
@@ -84,6 +87,8 @@ class QueryResponse(BaseModel):
     fault_code: int | None
     result: tuple[QueryItemResponse, ...]
     attempt_count: int
+    scope: QueryScope
+    parameter_path: str | None
 
 
 def create_router(
@@ -173,7 +178,12 @@ def create_router(
         try:
             return output(
                 await target().create(
-                    cpe_id, body.kind, body.idempotency_key, principal
+                    cpe_id,
+                    body.kind,
+                    body.idempotency_key,
+                    principal,
+                    scope=body.scope,
+                    parameter_path=body.parameter_path,
                 ),
                 response,
                 principal,

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 
 from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
-from acs.cwmp.compatibility.huawei import HuaweiEG8145X6Profile
+from acs.cwmp.compatibility.huawei import HuaweiEG8145V5Profile, HuaweiEG8145X6Profile
 from acs.domain.cpe.inform import Inform
 from acs.domain.cpe.inventory import NormalizedInventory
 
@@ -23,7 +23,11 @@ class InventoryProfile(Protocol):
 
 class ProfileInventoryNormalizer:
     def __init__(self, profiles: tuple[InventoryProfile, ...] | None = None) -> None:
-        selected = (HuaweiEG8145X6Profile(),) if profiles is None else profiles
+        selected = (
+            (HuaweiEG8145X6Profile(), HuaweiEG8145V5Profile())
+            if profiles is None
+            else profiles
+        )
         if len({profile.profile_id for profile in selected}) != len(selected):
             raise ValueError("Inventory profile IDs must be unique")
         if len({profile.priority for profile in selected}) != len(selected):

@@ -6,21 +6,48 @@ from uuid import UUID
 
 from acs.application.services.inform import hash_token
 from acs.domain.cpe.inventory import NormalizedInventory
+from acs.domain.cpe.telemetry import TelemetryCollection
 from acs.domain.events.session import CwmpSession, InvalidSession
 from acs.domain.operations.query import (
+    ParameterInfo,
     QueryCommand,
     QueryKind,
     QueryOperation,
     QueryPlan,
     QueryReply,
+    QueryResultItem,
+    QueryScope,
     QueryTarget,
 )
 from acs.domain.security import Principal
 
 
 class QueryPolicy(Protocol):
-    def plan(self, target: QueryTarget) -> QueryPlan: ...
-    def restore(self, profile_id: str, version: str) -> QueryPlan: ...
+    def plan(
+        self,
+        target: QueryTarget,
+        scope: QueryScope = "device_info",
+        parameter_path: str | None = None,
+        names: tuple[str, ...] = (),
+    ) -> QueryPlan: ...
+    def restore(
+        self,
+        profile_id: str,
+        version: str,
+        scope: QueryScope = "device_info",
+        parameter_path: str | None = None,
+        names: tuple[str, ...] = (),
+    ) -> QueryPlan: ...
+    def discovery_names(
+        self, reply: QueryReply, plan: QueryPlan
+    ) -> tuple[ParameterInfo, ...]: ...
+
+    def collect(
+        self, reply: QueryReply, plan: QueryPlan, at: datetime, operation_id: UUID
+    ) -> TelemetryCollection: ...
+    def collection_results(
+        self, reply: QueryReply, plan: QueryPlan, collection: TelemetryCollection
+    ) -> tuple[QueryResultItem, ...]: ...
     def normalize(
         self, reply: QueryReply, plan: QueryPlan, at: datetime, operation_id: UUID
     ) -> NormalizedInventory: ...
@@ -35,6 +62,9 @@ class QueryRepository(Protocol):
         actor: UUID | None,
         source: Literal["api", "local"],
         now: datetime,
+        *,
+        scope: QueryScope = "device_info",
+        parameter_path: str | None = None,
     ) -> QueryOperation: ...
     async def get(
         self, cpe_id: UUID, operation_id: UUID, now: datetime
@@ -49,11 +79,25 @@ class QueryService:
         self.repository = repository
 
     async def create(
-        self, cpe_id: UUID, kind: QueryKind, key: UUID, principal: Principal
+        self,
+        cpe_id: UUID,
+        kind: QueryKind,
+        key: UUID,
+        principal: Principal,
+        *,
+        scope: QueryScope = "device_info",
+        parameter_path: str | None = None,
     ) -> QueryOperation:
         principal.require("cpe:query")
         return await self.repository.create(
-            cpe_id, kind, key, principal.id, "api", datetime.now(UTC)
+            cpe_id,
+            kind,
+            key,
+            principal.id,
+            "api",
+            datetime.now(UTC),
+            scope=scope,
+            parameter_path=parameter_path,
         )
 
     async def get(

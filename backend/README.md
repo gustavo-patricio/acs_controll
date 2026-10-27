@@ -405,3 +405,27 @@ Execute os testes de integração com PostgreSQL enquanto o serviço do Compose 
 ```bash
 ACS_RUN_INTEGRATION_TESTS=1 uv run pytest -m integration
 ```
+
+## Coleta WAN e óptica
+
+A entrega de endereços IPv4/IPv6, MAC, DNS e potência óptica usa descoberta
+controlada e consultas por perfil. Consulte [contrato, comandos, evidências e
+limitações](docs/WAN_OPTICAL_TELEMETRY.md). O endpoint
+`GET /api/v1/cpes/{cpe_id}/telemetry` está disponível no Swagger da API.
+
+## Evolução da compatibilidade por evidências
+
+O [desenho de referência](docs/CPE_COMPATIBILITY_ARCHITECTURE.md) define coleta persistente,
+pacotes de evidência, catálogo observado, perfis declarativos versionados e
+reprodução offline. O documento distingue a base existente das próximas entregas
+e estabelece critérios de homologação por campo/modelo/firmware.
+
+## Ponto de retomada
+
+Consulte [estado atual, validações e próximo incremento](docs/WORK_STATUS.md)
+antes de retomar a evolução da coleta e dos perfis de compatibilidade.
+
+## Pacote de evidências offline
+
+A CLI `acs-evidence create/verify` transforma uma captura em pacote parcial
+com XML anonimizado e manifesto verificável. Consulte [comandos e limites](docs/EVIDENCE_PACKAGE.md).

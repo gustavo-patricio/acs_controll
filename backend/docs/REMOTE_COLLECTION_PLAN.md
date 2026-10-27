@@ -2,8 +2,9 @@
 
 **Atualização:** a primeira entrega de `GetParameterNames` e `GetParameterValues`
 está implementada. Veja [escopo, comandos e limitações atuais](READ_QUERIES.md).
-O texto abaixo preserva o plano original. A implementação limita-se a uma operação
-por sessão, sem encadeamento automático, para três campos DeviceInfo do perfil Huawei.
+O texto abaixo preserva o plano original. A implementação mantém uma operação
+por sessão, sem encadeamento automático. A ampliação para endereços, DNS, MAC e
+potência óptica está em [Coleta WAN/óptica](WAN_OPTICAL_TELEMETRY.md).
 
 ## Avaliação
 
@@ -89,3 +90,10 @@ de conectividade. Classificar online/offline ainda exige a janela configurável
 prevista em RN-002. Uptime, estado WAN e potência óptica são informações diferentes
 e terão campos, unidades e horários próprios; não serão condensados em um único
 estado inferido do nome do perfil.
+
+## Evolução da compatibilidade por evidências
+
+O [desenho de referência](CPE_COMPATIBILITY_ARCHITECTURE.md) define coleta persistente,
+pacotes de evidência, catálogo observado, perfis declarativos versionados e
+reprodução offline. O documento distingue a base existente das próximas entregas
+e estabelece critérios de homologação por campo/modelo/firmware.

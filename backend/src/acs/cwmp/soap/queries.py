@@ -1,5 +1,6 @@
 """SOAP 1.1/CWMP 1.0 read requests and bounded response parsing."""
 
+import re
 from io import BytesIO
 from typing import cast
 from xml.etree import ElementTree as ET
@@ -113,14 +114,37 @@ def parse_query_reply(payload: bytes) -> QueryReply:
             for item, value_type in zip(values, types, strict=True):
                 fields(item, ("Name", "Value"))
                 name = scalar(child(item, "Name"), 256)
-                if name in names or value_type != f"{{{XSD}}}string":
+                allowed_types = {
+                    f"{{{XSD}}}" + t: t
+                    for t in ("string", "int", "unsignedInt", "boolean")
+                }
+                if name in names or value_type not in allowed_types:
                     raise ValueError
                 names.add(name)
+                value = scalar(child(item, "Value"), 4096, empty=True)
+                kind = allowed_types[value_type]
+                if kind in ("int", "unsignedInt"):
+                    if not re.fullmatch(r"[+-]?[0-9]{1,11}", value.strip()):
+                        raise ValueError
+                    number = int(value)
+                    if not (
+                        (-(2**31) <= number < 2**31)
+                        if kind == "int"
+                        else (0 <= number < 2**32)
+                    ):
+                        raise ValueError
+                if kind == "boolean" and value.strip() not in (
+                    "true",
+                    "false",
+                    "0",
+                    "1",
+                ):
+                    raise ValueError
                 parameters.append(
                     Parameter(
                         name,
-                        scalar(child(item, "Value"), 4096, empty=True),
-                        "xsd:string",
+                        value,
+                        "xsd:" + kind,
                     )
                 )
             return QueryReply(

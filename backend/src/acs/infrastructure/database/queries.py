@@ -23,6 +23,7 @@ from acs.domain.operations.query import (
     QueryPlan,
     QueryReply,
     QueryResultItem,
+    QueryScope,
     QueryState,
     QueryTarget,
 )
@@ -33,6 +34,7 @@ from acs.infrastructure.database.inform_repository import (
     session_value,
 )
 from acs.infrastructure.database.query_models import QueryAttemptRow, QueryOperationRow
+from acs.infrastructure.database.telemetry import update_telemetry
 
 
 def target(cpe: Cpe) -> QueryTarget:
@@ -63,6 +65,8 @@ def operation(row: QueryOperationRow, attempted: bool) -> QueryOperation:
             for item in row.result
         ),
         int(attempted),
+        cast(QueryScope, row.scope),
+        row.parameter_path,
     )
 
 
@@ -114,6 +118,9 @@ class PostgresQueryRepository:
         actor: UUID | None,
         source: Literal["api", "local"],
         now: datetime,
+        *,
+        scope: QueryScope = "device_info",
+        parameter_path: str | None = None,
     ) -> QueryOperation:
         try:
             async with self.database.session() as db, db.begin():
@@ -126,7 +133,11 @@ class PostgresQueryRepository:
                     )
                 )
                 if old is not None:
-                    if old.kind != kind:
+                    if (old.kind, old.scope, old.parameter_path) != (
+                        kind,
+                        scope,
+                        parameter_path,
+                    ):
                         raise QueryConflict("idempotency_conflict")
                     return operation(
                         old, await db.get(QueryAttemptRow, old.id) is not None
@@ -138,12 +149,54 @@ class PostgresQueryRepository:
                     )
                 ):
                     raise QueryConflict("operation_in_progress")
-                plan = self.policy.plan(target(cpe))
+                if scope == "discovery" and kind != "get_parameter_names":
+                    raise QueryConflict("discovery_is_names_only")
+                discovered: set[str] = set()
+                if scope in ("wan", "optical"):
+                    if kind != "get_parameter_values" or parameter_path is None:
+                        raise QueryConflict("collection_is_values_only")
+                    evidence = (
+                        await db.scalars(
+                            select(QueryOperationRow)
+                            .where(
+                                QueryOperationRow.cpe_id == cpe_id,
+                                QueryOperationRow.scope == "discovery",
+                                QueryOperationRow.state == "succeeded",
+                                QueryOperationRow.expected_firmware == cpe.firmware,
+                                QueryOperationRow.finished_at
+                                >= now - timedelta(hours=24),
+                            )
+                            .order_by(
+                                QueryOperationRow.finished_at.desc(),
+                                QueryOperationRow.id,
+                            )
+                            .limit(256)
+                        )
+                    ).all()
+                    visited: set[str | None] = set()
+                    for discovery in evidence:
+                        if discovery.parameter_path in visited:
+                            continue
+                        visited.add(discovery.parameter_path)
+                        for item in discovery.result:
+                            name = item.get("name")
+                            if isinstance(name, str) and name.startswith(
+                                parameter_path
+                            ):
+                                discovered.add(name)
+                plan = self.policy.plan(
+                    target(cpe), scope, parameter_path, tuple(discovered)
+                )
                 row = QueryOperationRow(
                     id=uuid4(),
                     cpe_id=cpe_id,
                     idempotency_key=key,
                     kind=kind,
+                    scope=scope,
+                    parameter_path=parameter_path,
+                    requested_names=list(plan.names)
+                    if scope in ("wan", "optical")
+                    else [],
                     state="pending",
                     profile_id=plan.profile_id,
                     profile_version=plan.profile_version,
@@ -181,7 +234,12 @@ class PostgresQueryRepository:
         return session_value(session), None
 
     def _plan(self, cpe: Cpe, row: QueryOperationRow) -> QueryPlan:
-        plan = self.policy.plan(target(cpe))
+        plan = self.policy.plan(
+            target(cpe),
+            cast(QueryScope, row.scope),
+            row.parameter_path,
+            tuple(row.requested_names),
+        )
         if (plan.profile_id, plan.profile_version, plan.target.firmware) != (
             row.profile_id,
             row.profile_version,
@@ -301,12 +359,19 @@ class PostgresQueryRepository:
                 return self._finish(session, now)
             # A successful firmware query can legitimately change profile eligibility.
             try:
-                plan = self.policy.restore(row.profile_id, row.profile_version)
+                plan = self.policy.restore(
+                    row.profile_id,
+                    row.profile_version,
+                    cast(QueryScope, row.scope),
+                    row.parameter_path,
+                    tuple(row.requested_names),
+                )
             except QueryConflict:
                 raise InvalidSession from None
         reason: str | None = None
         results: list[QueryResultItem] = []
         inventory = None
+        telemetry = None
         if reply.kind == "fault":
             reason = "cpe_fault"
         elif reply.kind != row.kind:
@@ -314,6 +379,29 @@ class PostgresQueryRepository:
         elif reply.kind == "get_parameter_values":
             if {p.name for p in reply.parameters} != set(plan.names):
                 reason = "unexpected_parameters"
+            elif plan.scope in ("wan", "optical"):
+                try:
+                    telemetry = self.policy.collect(reply, plan, now, row.id)
+                    # Store only canonical results. Optical calibration retains only
+                    # validated numeric syntax in the restricted operation result.
+                    results = list(
+                        self.policy.collection_results(reply, plan, telemetry)
+                    )
+                    if any(
+                        field.state in ("invalid", "unverified")
+                        for field in telemetry.fields
+                    ):
+                        reason = (
+                            "invalid_values"
+                            if any(
+                                field.state == "invalid" for field in telemetry.fields
+                            )
+                            else "unverified_units"
+                        )
+                except QueryConflict:
+                    reason = "not_internet_pppoe"
+            elif any(p.value_type != "xsd:string" for p in reply.parameters):
+                reason = "invalid_values"
             else:
                 inventory = self.policy.normalize(reply, plan, now, row.id)
                 observations = (inventory.model, inventory.firmware, inventory.hardware)
@@ -333,8 +421,7 @@ class PostgresQueryRepository:
             else:
                 results = [
                     QueryResultItem(item.name, writable=item.writable)
-                    for item in reply.names
-                    if item.name in plan.names
+                    for item in self.policy.discovery_names(reply, plan)
                 ]
         results.sort(key=lambda item: item.name)
         safe_result = [asdict(item) for item in results]
@@ -351,6 +438,8 @@ class PostgresQueryRepository:
             raise InvalidSession
         if inventory is not None:
             await PostgresInformRepository.update_inventory(db, cpe.id, inventory)
+        if telemetry is not None:
+            await update_telemetry(db, cpe.id, telemetry)
         row.state = "succeeded" if reason is None else "failed"
         row.failure_reason, row.finished_at, row.fault_code = (
             reason,

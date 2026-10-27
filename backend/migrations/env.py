@@ -9,11 +9,13 @@ from acs.infrastructure.database.auth_models import AuthAccount
 from acs.infrastructure.database.cwmp_models import Cpe
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.query_models import QueryOperationRow
+from acs.infrastructure.database.telemetry_models import CpeTelemetryField
 from acs.settings import get_settings
 
 # Import both model modules to register protocol and authentication tables.
 assert AuthAccount.metadata is Cpe.metadata
 assert QueryOperationRow.metadata is Cpe.metadata
+assert CpeTelemetryField.metadata is Cpe.metadata
 target_metadata = Cpe.metadata
 
 

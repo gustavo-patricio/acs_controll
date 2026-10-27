@@ -59,8 +59,8 @@ class CapabilityView:
 class InventoryCapabilities:
     # No supported/unsupported claims may be inferred from missing Inform fields.
     wifi: CapabilityView = CapabilityView()
-    wan: CapabilityView = CapabilityView()
-    optical: CapabilityView = CapabilityView()
+    wan: CapabilityView = CapabilityView(acs_implemented=True)
+    optical: CapabilityView = CapabilityView(acs_implemented=True)
     voice: CapabilityView = CapabilityView()
 
 

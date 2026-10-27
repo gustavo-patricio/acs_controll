@@ -24,6 +24,7 @@ from acs.domain.cpe.inventory_view import (
     InventoryFields,
     InventoryFieldView,
 )
+from acs.domain.cpe.telemetry import CpeTelemetryView
 from acs.settings import Settings
 from auth_support import ADMIN
 from auth_support import admin_app as create_app
@@ -31,6 +32,10 @@ from auth_support import authorized_client as AsyncClient
 
 
 class InventoryStub:
+    async def get_telemetry(self, cpe_id: UUID) -> CpeTelemetryView:
+        await self.get_cpe(cpe_id)
+        return CpeTelemetryView(cpe_id)
+
     async def get_inventory(self, cpe_id: UUID) -> CpeInventoryView:
         cpe = await self.get_cpe(cpe_id)
         return CpeInventoryView(

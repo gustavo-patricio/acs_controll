@@ -27,6 +27,7 @@ from acs.domain.cpe.inventory_view import (
     LastObservation,
     ValueProvenance,
 )
+from acs.domain.cpe.telemetry import CpeTelemetryView
 from acs.infrastructure.database.cwmp_models import (
     Cpe,
     CpeInventoryField,
@@ -34,6 +35,7 @@ from acs.infrastructure.database.cwmp_models import (
     CwmpSessionRow,
 )
 from acs.infrastructure.database.database import Database
+from acs.infrastructure.database.telemetry import read_telemetry
 
 
 class PostgresCpeInventoryRepository:
@@ -126,6 +128,10 @@ class PostgresCpeInventoryRepository:
                     hardware=self._field(cpe.hardware, metadata.get("hardware")),
                 ),
             )
+
+    async def get_telemetry(self, cpe_id: UUID) -> CpeTelemetryView:
+        async with self._cpe_snapshot(cpe_id) as session:
+            return await read_telemetry(session, cpe_id)
 
     async def list_sessions(self, cpe_id: UUID, limit: int, offset: int) -> SessionPage:
         async with self._cpe_snapshot(cpe_id) as session:

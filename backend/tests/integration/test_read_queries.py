@@ -58,6 +58,66 @@ pytestmark = [
 ]
 
 
+@pytest.mark.asyncio
+async def test_scoped_discovery_persists_only_allowed_names(
+    cwmp_database: Database, huawei: Inform
+) -> None:
+    now = datetime.now(UTC)
+    initial = await accept(cwmp_database, huawei, now, token="discovery-session")
+    repo = PostgresQueryRepository(cwmp_database, HuaweiQueryPolicy())
+    path = "InternetGatewayDevice.WANDevice."
+    with pytest.raises(QueryConflict):
+        await repo.create(
+            initial.cpe_id,
+            "get_parameter_values",
+            uuid4(),
+            None,
+            "local",
+            now,
+            scope="discovery",
+            parameter_path=path,
+        )
+    row = await repo.create(
+        initial.cpe_id,
+        "get_parameter_names",
+        uuid4(),
+        None,
+        "local",
+        now,
+        scope="discovery",
+        parameter_path=path,
+    )
+    with pytest.raises(QueryConflict):
+        await repo.create(
+            initial.cpe_id,
+            "get_parameter_names",
+            uuid4(),
+            None,
+            "local",
+            now,
+            scope="discovery",
+            parameter_path=path,
+        )
+    _, command = await repo.exchange("discovery-session", None, now)
+    assert (
+        command is not None
+        and command.plan.parameter_path == path
+        and command.plan.scope == "discovery"
+    )
+    reply = parse_query_reply(
+        reply_xml(
+            command.rpc_id,
+            "get_parameter_names",
+            names=(path + "2.", path + "Password"),
+        )
+    )
+    await repo.exchange("discovery-session", reply, now + timedelta(seconds=1))
+    result = await repo.get(initial.cpe_id, row.id, now + timedelta(seconds=2))
+    assert result.state == "succeeded" and result.scope == "discovery"
+    assert [r.name for r in result.result] == [path + "2."]
+    assert result.result[0].value is None
+
+
 class QueryAuth:
     def __init__(self, inform: Inform) -> None:
         self.device = principal_for(inform)
