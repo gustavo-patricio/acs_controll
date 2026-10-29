@@ -87,3 +87,15 @@ class QueryOperation:
     attempt_count: int = 0
     scope: QueryScope = "device_info"
     parameter_path: str | None = None
+    capture_evidence: bool = False
+    evidence_available: bool = False
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    cpe_id: UUID
+    path: str
+    is_object: bool
+    writable: bool
+    observed_at: datetime
+    operation_id: UUID

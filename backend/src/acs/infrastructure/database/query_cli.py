@@ -39,6 +39,7 @@ async def run(args: argparse.Namespace) -> None:
                 datetime.now(UTC),
                 scope=cast(QueryScope, args.scope),
                 parameter_path=args.path,
+                capture_evidence=args.capture_evidence,
             )
         print(
             json.dumps(
@@ -49,6 +50,8 @@ async def run(args: argparse.Namespace) -> None:
                     "failure_reason": result.failure_reason,
                     "fault_code": result.fault_code,
                     "attempt_count": result.attempt_count,
+                    "capture_evidence": result.capture_evidence,
+                    "evidence_available": result.evidence_available,
                 }
             )
         )
@@ -69,6 +72,11 @@ def main() -> None:
     )
     choice.add_argument("--operation-id", type=UUID)
     parser.add_argument("--key", type=UUID, help="Chave de idempotencia para criacao")
+    parser.add_argument(
+        "--capture-evidence",
+        action="store_true",
+        help="Guardar pacote anonimizado da resposta para exportação pela API",
+    )
     parser.add_argument(
         "--scope",
         choices=("device_info", "discovery", "wan", "optical"),

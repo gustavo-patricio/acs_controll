@@ -198,3 +198,164 @@ Ainda não há descoberta recursiva automática, coleta
 periódica automática, retentativas, múltiplas tentativas, worker de expiração,
 Connection Request, escrita de parâmetros, reboot ou firmware. Uma leitura recente
 é uma observação; online/offline ainda depende da janela configurável de RN-002.
+
+## Validação isolada de GetParameterNames em DeviceInfo
+
+Para esta etapa, reutilize a fila e o endpoint existentes. No escopo
+`device_info`, o perfil define `ParameterPath=InternetGatewayDevice.DeviceInfo.`
+ e `NextLevel=true`. Não envie `parameter_path` nem `next_level` no JSON:
+ o primeiro é selecionado pelo perfil e o segundo não faz parte do contrato REST.
+
+Execute no diretório `backend`, usando o endereço HTTPS correspondente ao
+certificado da API administrativa. O exemplo local abaixo solicita a senha
+interativamente (a conta deve ter papel `administrator`):
+
+```bash
+export ACS_API_URL='https://localhost:8000'
+export ACS_ADMIN_USER='seu_administrador'
+export CPE_ID='UUID_DA_CPE_REGISTRADA'
+export QUERY_KEY="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+
+curl --cacert .tls/server.crt --user "$ACS_ADMIN_USER" \
+  --header 'Content-Type: application/json' \
+  --data "{\"kind\":\"get_parameter_names\",\"scope\":\"device_info\",\"idempotency_key\":\"$QUERY_KEY\"}" \
+  "$ACS_API_URL/api/v1/cpes/$CPE_ID/queries"
+```
+
+Se a API usa outra autoridade certificadora, substitua `--cacert` pelo certificado
+ dessa autoridade. Use o `id` retornado no HTTP 202 para consultar:
+
+```bash
+export OPERATION_ID='UUID_RETORNADO_NO_POST'
+curl --cacert .tls/server.crt --user "$ACS_ADMIN_USER" \
+  "$ACS_API_URL/api/v1/cpes/$CPE_ID/queries/$OPERATION_ID"
+```
+
+O fluxo esperado é `pending` → Inform/InformResponse → POST vazio/GPN →
+GPNResponse/HTTP 204 → `succeeded`. O resultado contém os nomes permitidos
+`ModelName`, `SoftwareVersion`, `HardwareVersion` e seus indicadores `writable`;
+esta operação não coleta os valores desses parâmetros. Não envia requisições à
+`ConnectionRequestURL`, não dispara outra consulta e não percorre a árvore
+recursivamente. Uma CPE com perfil incompatível recebe conflito na criação.
+
+SOAP Fault correlacionado termina em `failed`, com `failure_reason=cpe_fault` e
+código recebido preservado (o simulador usa 9005: nome inválido). Sem resposta no
+prazo, a operação termina em `expired`, com `deadline_exceeded`. Respostas tardias
+são descartadas e a sessão termina com 204. A expiração é avaliada no tráfego ou
+na consulta de estado; não há worker de expiração periódica.
+
+Teste com simulador HTTP e PostgreSQL isolado:
+
+```bash
+ACS_RUN_INTEGRATION_TESTS=1 uv run pytest -q \
+  tests/integration/test_read_queries.py \
+  tests/unit/test_query_soap.py tests/unit/test_cpe_simulator.py
+```
+
+O simulador valida o InformResponse, o caminho e NextLevel do GPN, responde com
+XML próprio e cobre sucesso, SOAP Fault e resposta após timeout. Os testes
+existentes também verificam ID incorreto, principal incorreto, repetição e
+persistência. Nenhuma CPE real precisa ser reiniciada para esses testes.
+
+## Catálogo persistente por CPE
+
+`GET /api/v1/cpes/{cpe_id}/queries/catalog?prefix=InternetGatewayDevice.DeviceInfo.&limit=50&offset=0`
+consulta os nomes observados, com a mesma autenticação administrativa das consultas
+(`inventory:read`). Não dispara nenhum RPC. Está disponível no Swagger.
+
+A resposta contém `items`, `limit`, `offset` e `has_more`. Cada item contém apenas
+`cpe_id`, `path` (completo), `is_object`, `writable`, `observed_at` e `operation_id`.
+O ponto final do caminho identifica um objeto. GPN não fornece tipo nem valor;
+esses campos não existem neste catálogo. `observed_at` é a data de recebimento
+no ACS, não um relógio informado pela CPE.
+
+O prefixo é literal, inclusive para `%` e `_`. A ordenação é por caminho; `limit`
+aceita 1–100 (padrão 50) e `offset` começa em zero. Páginas consultadas durante
+novas gravações não constituem um snapshot. CPE existente sem observações retorna
+lista vazia; CPE inexistente, 404; parâmetros inválidos, 422.
+
+A migration `0009_parameter_catalog` cria a chave única `(cpe_id, path)` e
+recupera a observação mais recente de cada caminho retido nas operações GPN
+bem-sucedidas anteriores. Caminhos descartados pelo código antigo não podem ser
+recuperados. Novas respostas GPN válidas e correlacionadas gravam todos os nomes
+estruturais recebidos dentro do escopo solicitado, independentemente da projeção
+do resultado da operação. Nenhuma regra de perfil nova foi adicionada.
+
+A gravação ocorre na mesma transação da conclusão da operação. Outra observação
+atualiza Writable, data e operação de origem; uma repetição da mesma resposta não
+altera o catálogo. Respostas parciais ou vazias não removem caminhos antigos.
+Faults, respostas inesperadas e respostas após timeout não atualizam o catálogo.
+Ausência de um caminho não comprova que ele deixou de existir na CPE.
+
+```bash
+uv run alembic upgrade head
+ACS_RUN_INTEGRATION_TESTS=1 uv run pytest -q \
+  tests/integration/test_parameter_catalog.py tests/integration/test_read_queries.py
+```
+
+O downgrade remove o catálogo, incluindo caminhos novos que não foram retidos na
+projeção histórica das operações; exporte-o antes de executar esse downgrade.
+
+## GPV com caminhos selecionados
+
+O mesmo POST aceita `parameter_names`, uma lista não vazia de até 16 caminhos
+únicos. Nesta etapa, a política permite somente as folhas `ModelName`,
+`HardwareVersion` e `SoftwareVersion` de `InternetGatewayDevice.DeviceInfo.`.
+Objetos, credenciais e demais caminhos são rejeitados; não se lê a árvore inteira.
+A seleção explícita exige `kind=get_parameter_values` e `scope=device_info`.
+Omissão da lista mantém o comportamento anterior do conjunto fixo por perfil.
+
+No diretório `backend`, configure `ACS_API_URL`, `ACS_ADMIN_USER` e `CPE_ID` como
+no exemplo anterior. A chamada exata para hardware e software é:
+
+```bash
+curl --cacert .tls/server.crt --user "$ACS_ADMIN_USER" \
+  --header 'Content-Type: application/json' \
+  --data "{\"kind\":\"get_parameter_values\",\"scope\":\"device_info\",\"idempotency_key\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"parameter_names\":[\"InternetGatewayDevice.DeviceInfo.HardwareVersion\",\"InternetGatewayDevice.DeviceInfo.SoftwareVersion\"]}" \
+  "$ACS_API_URL/api/v1/cpes/$CPE_ID/queries"
+```
+
+O HTTP 202 cria a operação pendente. Consulte seu `id` no GET de operação existente.
+O ACS aguarda Inform/InformResponse e o POST vazio da mesma sessão para enviar o
+GPV. A resposta deve corresponder à sessão, CPE, ID e conjunto exato solicitado;
+nenhum RPC é enviado para ConnectionRequestURL. Reordenar a lista com a mesma chave
+é idempotente; mudar seu conteúdo retorna 409. Lista vazia ou maior que o limite
+retorna 422; duplicatas e caminhos não permitidos, 409.
+
+A migration `0010_parameter_values` cria `cpe_parameter_values`, com chave
+`(cpe_id, path)`, `xml_type`, `value`, `observed_at` e `operation_id`. O tipo XML é
+resolvido pelo namespace, usando a grafia canônica `xsd:string`, não o prefixo
+arbitrário escolhido pelo equipamento. Para essas folhas DeviceInfo, a política
+aceita strings imprimíveis de até 256 caracteres, inclusive vazias, preservando
+espaços e conteúdo sem conversão. Tipo incompatível ou conteúdo fora da política
+faz a consulta explícita falhar. Os valores nunca são incluídos nos logs.
+
+Cada resposta válida atualiza os valores selecionados na mesma transação da
+operação. Fault, timeout, resposta incompleta/inesperada ou inválida preservam a
+última observação válida; não há gravação de null. A seleção explícita armazena
+observações por caminho, sem atualizar automaticamente o inventário normalizado:
+string vazia válida em GPV não significa identificação válida para o inventário.
+O catálogo GPN permanece separado e não recebe tipos/valores inventados.
+
+Não há backfill desta tabela: resultados normalizados antigos não guardavam o tipo
+XML reportado nem garantiam preservar a string original. Não se presume esses
+dados. O downgrade remove as observações; exporte-as antes de executá-lo.
+
+```bash
+uv run alembic upgrade head
+ACS_RUN_INTEGRATION_TESTS=1 uv run pytest -q \
+  tests/integration/test_parameter_values.py tests/integration/test_read_queries.py \
+  tests/integration/test_telemetry.py tests/unit/test_query_soap.py \
+  tests/unit/test_query_evidence.py
+```
+
+## Trabalhos limitados
+
+A navegação por ramos com GPN e a seleção de folhas em lotes GPV são descritas em
+[Descoberta e lotes limitados](BOUNDED_COLLECTIONS.md). Operações avulsas continuam
+válidas; descoberta não dispara leitura automática de valores.
+
+## Exportação de resultados armazenados
+
+A exportação de catálogo, últimas observações tipadas, escopo e falhas em JSON ou
+XML reconstruído está em [Exportação de resultados](STORED_RESULTS_EXPORT.md).

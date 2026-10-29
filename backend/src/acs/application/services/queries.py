@@ -5,10 +5,14 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 from acs.application.services.inform import hash_token
+from acs.domain.cpe.inform import Parameter
 from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.cpe.telemetry import TelemetryCollection
 from acs.domain.events.session import CwmpSession, InvalidSession
+from acs.domain.operations.collection import CollectionProgress, CollectionSpec
+from acs.domain.operations.export import ExportSnapshot
 from acs.domain.operations.query import (
+    CatalogEntry,
     ParameterInfo,
     QueryCommand,
     QueryKind,
@@ -23,6 +27,13 @@ from acs.domain.security import Principal
 
 
 class QueryPolicy(Protocol):
+    def permitted_values(
+        self, reply: QueryReply, plan: QueryPlan
+    ) -> tuple[Parameter, ...]: ...
+
+    def evidence(
+        self, reply: QueryReply, plan: QueryPlan, kind: QueryKind, at: datetime
+    ) -> str: ...
     def plan(
         self,
         target: QueryTarget,
@@ -54,6 +65,19 @@ class QueryPolicy(Protocol):
 
 
 class QueryRepository(Protocol):
+    async def export_snapshot(self, cpe_id: UUID, prefix: str) -> ExportSnapshot: ...
+
+    async def create_collection(
+        self, cpe_id: UUID, spec: CollectionSpec, key: UUID, actor: UUID, now: datetime
+    ) -> CollectionProgress: ...
+    async def get_collection(
+        self, cpe_id: UUID, job_id: UUID, now: datetime
+    ) -> CollectionProgress: ...
+
+    async def catalog(
+        self, cpe_id: UUID, prefix: str, limit: int, offset: int
+    ) -> tuple[CatalogEntry, ...]: ...
+
     async def create(
         self,
         cpe_id: UUID,
@@ -65,7 +89,10 @@ class QueryRepository(Protocol):
         *,
         scope: QueryScope = "device_info",
         parameter_path: str | None = None,
+        capture_evidence: bool = False,
+        parameter_names: tuple[str, ...] = (),
     ) -> QueryOperation: ...
+    async def get_evidence(self, cpe_id: UUID, operation_id: UUID) -> str: ...
     async def get(
         self, cpe_id: UUID, operation_id: UUID, now: datetime
     ) -> QueryOperation: ...
@@ -75,6 +102,12 @@ class QueryRepository(Protocol):
 
 
 class QueryService:
+    async def export_snapshot(
+        self, cpe_id: UUID, prefix: str, principal: Principal
+    ) -> ExportSnapshot:
+        principal.require("cpe:query")
+        return await self.repository.export_snapshot(cpe_id, prefix)
+
     def __init__(self, repository: QueryRepository) -> None:
         self.repository = repository
 
@@ -87,6 +120,8 @@ class QueryService:
         *,
         scope: QueryScope = "device_info",
         parameter_path: str | None = None,
+        capture_evidence: bool = False,
+        parameter_names: tuple[str, ...] = (),
     ) -> QueryOperation:
         principal.require("cpe:query")
         return await self.repository.create(
@@ -98,7 +133,35 @@ class QueryService:
             datetime.now(UTC),
             scope=scope,
             parameter_path=parameter_path,
+            capture_evidence=capture_evidence,
+            parameter_names=parameter_names,
         )
+
+    async def create_collection(
+        self, cpe_id: UUID, spec: CollectionSpec, key: UUID, principal: Principal
+    ) -> CollectionProgress:
+        principal.require("cpe:query")
+        return await self.repository.create_collection(
+            cpe_id, spec, key, principal.id, datetime.now(UTC)
+        )
+
+    async def get_collection(
+        self, cpe_id: UUID, job_id: UUID, principal: Principal
+    ) -> CollectionProgress:
+        principal.require("inventory:read")
+        return await self.repository.get_collection(cpe_id, job_id, datetime.now(UTC))
+
+    async def catalog(
+        self, cpe_id: UUID, prefix: str, limit: int, offset: int, principal: Principal
+    ) -> tuple[CatalogEntry, ...]:
+        principal.require("inventory:read")
+        return await self.repository.catalog(cpe_id, prefix, limit, offset)
+
+    async def get_evidence(
+        self, cpe_id: UUID, operation_id: UUID, principal: Principal
+    ) -> str:
+        principal.require("cpe:query")
+        return await self.repository.get_evidence(cpe_id, operation_id)
 
     async def get(
         self, cpe_id: UUID, operation_id: UUID, principal: Principal

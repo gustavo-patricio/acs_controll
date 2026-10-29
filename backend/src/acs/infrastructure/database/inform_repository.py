@@ -19,6 +19,7 @@ from acs.infrastructure.database.cwmp_models import (
     CwmpSessionRow,
 )
 from acs.infrastructure.database.database import Database
+from acs.infrastructure.database.query_models import ProfileValidationRow
 
 
 def session_value(row: CwmpSessionRow) -> CwmpSession:
@@ -74,6 +75,15 @@ class PostgresInformRepository:
                 row.value_source_method = inventory.source_method
                 row.value_operation_id = inventory.operation_id
         if values:
+            if "firmware" in values:
+                approval = await db.get(ProfileValidationRow, cpe_id)
+                if (
+                    approval is not None
+                    and values["firmware"] != approval.expected_firmware
+                ):
+                    approval.expected_firmware = "REVALIDATION_REQUIRED"
+                    approval.approved_at = None
+                    approval.approved_by = None
             await db.execute(update(Cpe).where(Cpe.id == cpe_id).values(**values))
 
     async def accept(

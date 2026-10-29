@@ -6,6 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from acs.cwmp.compatibility.evidence_package import build_package
+from acs.cwmp.compatibility.query_evidence import (
+    MAX_QUERY_EVIDENCE,
+    verify_query_evidence,
+)
 from acs.cwmp.soap.inform import MAX_BODY
 from acs.domain.operations.evidence import InvalidEvidence
 from acs.infrastructure.storage.evidence_package import (
@@ -29,8 +33,26 @@ def main(argv: Sequence[str] | None = None) -> None:
         "verify", help="Verificar formato, conteúdo e integridade"
     )
     verify.add_argument("package", type=Path)
+    query = commands.add_parser(
+        "verify-query", help="Verificar evidência exportada de uma consulta GPN/GPV"
+    )
+    query.add_argument("package", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "verify-query":
+            bundle = verify_query_evidence(
+                read_bounded(args.package, MAX_QUERY_EVIDENCE)
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "verified",
+                        "format_version": bundle.format_version,
+                        "partial": bundle.manifest.partial,
+                    }
+                )
+            )
+            return
         if args.command == "create":
             package = build_package(read_bounded(args.input, MAX_BODY))
             publish_package(args.output, package)

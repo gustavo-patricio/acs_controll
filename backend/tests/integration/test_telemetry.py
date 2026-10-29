@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from acs.api.app import create_app
 from acs.application.services.cpe_inventory import CpeInventoryService
 from acs.cwmp.compatibility.queries import HuaweiQueryPolicy
+from acs.cwmp.compatibility.query_evidence import verify_query_evidence
 from acs.cwmp.soap.inform import parse_inform
 from acs.cwmp.soap.queries import parse_query_reply
 from acs.domain.events.session import InvalidSession
@@ -92,6 +93,7 @@ async def test_discovery_collection_api_and_last_valid(
             now,
             scope=scope,
             parameter_path=path,
+            capture_evidence=True,
         )
         assert (
             await repo.create(
@@ -103,6 +105,7 @@ async def test_discovery_collection_api_and_last_valid(
                 now,
                 scope=scope,
                 parameter_path=path,
+                capture_evidence=True,
             )
         ).id == operation.id
         _, command = await repo.exchange(token, None, now)
@@ -174,6 +177,14 @@ async def test_discovery_collection_api_and_last_valid(
     await exchange("discovery", OPTICAL, optical_names)
     optical = await exchange("optical", OPTICAL, optical_names, ("-2050", "210"))
     assert optical.failure_reason == "unverified_units"
+    assert optical.evidence_available
+    evidence = verify_query_evidence(
+        (await repo.get_evidence(initial.cpe_id, optical.id)).encode()
+    )
+    assert evidence.manifest.optical_unit == "unverified"
+    wan_evidence = await repo.get_evidence(initial.cpe_id, first.id)
+    assert "02:aa:bb:cc:dd:ee" not in wan_evidence and "192.0.2.10" not in wan_evidence
+    verify_query_evidence(wan_evidence.encode())
     optical_field = (
         (await inventory.get_telemetry(initial.cpe_id)).optical[0].fields.rx_power
     )

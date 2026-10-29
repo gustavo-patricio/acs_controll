@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Protocol
 
+from acs.cwmp.compatibility.draft_profiles import DraftProfile, draft_from_export
 from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
 from acs.cwmp.compatibility.huawei import HuaweiEG8145V5Profile, HuaweiEG8145X6Profile
 from acs.domain.cpe.inform import Inform
@@ -22,6 +23,11 @@ class InventoryProfile(Protocol):
 
 
 class ProfileInventoryNormalizer:
+    @staticmethod
+    def draft_from_export(document: dict[str, object]) -> DraftProfile:
+        """Review proposal only; never adds it to the active profile list."""
+        return draft_from_export(document)
+
     def __init__(self, profiles: tuple[InventoryProfile, ...] | None = None) -> None:
         selected = (
             (HuaweiEG8145X6Profile(), HuaweiEG8145V5Profile())

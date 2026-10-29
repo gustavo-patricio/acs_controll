@@ -20,6 +20,7 @@ from acs.application.services.queries import QueryService
 from acs.cwmp.compatibility.evidence import anonymized_inform
 from acs.cwmp.compatibility.profiles import ProfileInventoryNormalizer
 from acs.cwmp.compatibility.queries import NAMES, HuaweiQueryPolicy
+from acs.cwmp.compatibility.query_evidence import verify_query_evidence
 from acs.cwmp.http.app import COOKIE
 from acs.cwmp.http.app import create_app as cwmp_app
 from acs.cwmp.soap.inform import parse_envelope
@@ -169,7 +170,7 @@ async def test_authenticated_api_and_real_cwmp_read_flow(
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="https://test"
     ) as client:
-        body = {"kind": kind, "idempotency_key": str(uuid4())}
+        body = {"kind": kind, "idempotency_key": str(uuid4()), "capture_evidence": True}
         assert (await client.post(path, json=body)).status_code == 401
         assert (
             await client.post(path, json=body, auth=("support", PASSWORD))
@@ -177,6 +178,23 @@ async def test_authenticated_api_and_real_cwmp_read_flow(
         response = await client.post(path, json=body, auth=("admin", PASSWORD))
         assert response.status_code == 202
         operation_id = response.json()["id"]
+        evidence_path = path + "/" + operation_id + "/evidence"
+        assert (
+            response.json()["capture_evidence"]
+            and not response.json()["evidence_available"]
+        )
+        assert (await client.get(evidence_path)).status_code == 401
+        assert (
+            await client.get(evidence_path, auth=("support", PASSWORD))
+        ).status_code == 403
+        assert (
+            await client.get(evidence_path, auth=("admin", PASSWORD))
+        ).status_code == 409
+        assert (
+            await client.post(
+                path, json={**body, "capture_evidence": False}, auth=("admin", PASSWORD)
+            )
+        ).status_code == 409
         assert (await client.post(path, json=body, auth=("admin", PASSWORD))).json()[
             "id"
         ] == operation_id
@@ -192,7 +210,7 @@ async def test_authenticated_api_and_real_cwmp_read_flow(
             json={**body, "parameter_names": ["SYNTHETIC-PRIVATE-PASSWORD"]},
             auth=("admin", PASSWORD),
         )
-        assert invalid.status_code == 422 and "PRIVATE" not in invalid.text
+        assert invalid.status_code == 409 and "PRIVATE" not in invalid.text
         schema = (await client.get("/openapi.json")).json()
         assert schema["paths"]["/api/v1/cpes/{cpe_id}/queries"]["post"]["security"] == [
             {"AdminBasic": []}
@@ -260,6 +278,25 @@ async def test_authenticated_api_and_real_cwmp_read_flow(
         )
         assert observed.status_code == 200 and observed.json()["state"] == "succeeded"
         assert observed.json()["attempt_count"] == 1
+        assert observed.json()["evidence_available"]
+        exported = await client.get(evidence_path, auth=("admin", PASSWORD))
+        assert exported.status_code == 200
+        assert exported.headers["cache-control"] == "no-store"
+        assert "attachment" in exported.headers["content-disposition"]
+        bundle = verify_query_evidence(exported.content)
+        assert bundle.manifest.kind == kind
+        assert (
+            await client.get(evidence_path, auth=("admin", PASSWORD))
+        ).content == exported.content
+        assert (
+            await client.get(
+                f"/api/v1/cpes/{uuid4()}/queries/{operation_id}/evidence",
+                auth=("admin", PASSWORD),
+            )
+        ).status_code == 404
+        assert (
+            "/api/v1/cpes/{cpe_id}/queries/{operation_id}/evidence" in schema["paths"]
+        )
         assert {item["name"] for item in observed.json()["result"]} == set(NAMES)
     async with cwmp_database.session() as db:
         assert await db.scalar(select(func.count()).select_from(QueryAttemptRow)) == 1
@@ -358,7 +395,9 @@ async def test_read_results_are_bounded_and_failures_preserve_inventory(
     kind: QueryKind = (
         "get_parameter_names" if case == "names_filtered" else "get_parameter_values"
     )
-    operation = await repo.create(initial.cpe_id, kind, uuid4(), None, "local", now)
+    operation = await repo.create(
+        initial.cpe_id, kind, uuid4(), None, "local", now, capture_evidence=True
+    )
     _, command = await repo.exchange("session", None, now)
     assert command is not None
     if case == "fault":
@@ -390,6 +429,14 @@ async def test_read_results_are_bounded_and_failures_preserve_inventory(
         "succeeded" if case in ("firmware_changed", "names_filtered") else "failed"
     )
     assert "PRIVATE" not in repr(state)
+    if case == "unexpected":
+        assert not state.evidence_available
+        with pytest.raises(QueryConflict):
+            await repo.get_evidence(initial.cpe_id, operation.id)
+    else:
+        evidence = await repo.get_evidence(initial.cpe_id, operation.id)
+        assert "PRIVATE" not in evidence
+        verify_query_evidence(evidence.encode())
     await repo.exchange("session", reply, now + timedelta(seconds=3))
     with pytest.raises(InvalidSession):
         await repo.exchange(
@@ -507,3 +554,92 @@ async def test_query_migration_preserves_inform_metadata_and_audit_history(
             and row.local_actor == f"uid:{os.getuid()}"
             and row.requested_by is None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "fault", "timeout"])
+async def test_device_info_gpn_simulator(
+    cwmp_database: Database, huawei: Inform, outcome: str
+) -> None:
+    from cwmp_simulator import device_info_gpn_response, receive_device_info_gpn
+
+    now = datetime.now(UTC)
+    initial = await accept(cwmp_database, huawei, now)
+    auth = QueryAuth(huawei)
+    queries = QueryService(PostgresQueryRepository(cwmp_database, HuaweiQueryPolicy()))
+    app = admin_app(
+        CpeInventoryService(PostgresCpeInventoryRepository(cwmp_database)),
+        auth,
+        queries=queries,
+    )
+    receiver = cwmp_app(
+        InformService(
+            PostgresInformRepository(cwmp_database), ProfileInventoryNormalizer()
+        ),
+        auth,
+        queries,
+    )
+    path = f"/api/v1/cpes/{initial.cpe_id}/queries"
+    async with (
+        AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            auth=("admin", PASSWORD),
+        ) as admin,
+        AsyncClient(
+            transport=ASGITransport(app=receiver),
+            base_url="https://test",
+            auth=("device", PASSWORD),
+        ) as cpe,
+    ):
+        created = await admin.post(
+            path,
+            json={
+                "kind": "get_parameter_names",
+                "scope": "device_info",
+                "idempotency_key": str(uuid4()),
+            },
+        )
+        assert created.status_code == 202 and created.json()["state"] == "pending"
+        operation_id = UUID(created.json()["id"])
+        inform = anonymized_inform(huawei, now)
+        inform_id, _ = parse_envelope(inform)
+        rpc_id = await receive_device_info_gpn(cpe, "/cwmp", inform, inform_id)
+        if outcome == "timeout":
+            # Advance the persisted deadline, without sleeping or touching live CPEs.
+            async with cwmp_database.session() as db, db.begin():
+                await db.execute(
+                    update(QueryOperationRow)
+                    .where(QueryOperationRow.id == operation_id)
+                    .values(expires_at=now - timedelta(seconds=1))
+                )
+        reply = device_info_gpn_response(rpc_id, fault=outcome == "fault")
+        response = await cpe.post(
+            "/cwmp", content=reply, headers={"Content-Type": "text/xml"}
+        )
+        assert response.status_code == 204 and not response.content
+        assert COOKIE not in cpe.cookies
+        result = (await admin.get(f"{path}/{operation_id}")).json()
+        assert (
+            result["state"]
+            == {"success": "succeeded", "fault": "failed", "timeout": "expired"}[
+                outcome
+            ]
+        )
+        assert result["attempt_count"] == 1
+        if outcome == "success":
+            assert {item["name"] for item in result["result"]} == set(NAMES)
+            assert all(item["writable"] is False for item in result["result"])
+        else:
+            assert result["result"] == []
+            assert result["failure_reason"] == (
+                "cpe_fault" if outcome == "fault" else "deadline_exceeded"
+            )
+            assert result["fault_code"] == (9005 if outcome == "fault" else None)
+    async with cwmp_database.session() as db:
+        attempt = await db.get(QueryAttemptRow, operation_id)
+        assert attempt is not None
+        session = await db.get(CwmpSessionRow, attempt.session_id)
+        assert session is not None and session.state == "completed"
+        assert session.cpe_id == initial.cpe_id
+        assert await db.scalar(select(func.count()).select_from(QueryOperationRow)) == 1

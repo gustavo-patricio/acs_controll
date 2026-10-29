@@ -1,18 +1,22 @@
 """Reviewed, allowlisted query plan for the laboratory Huawei profile."""
 
-import re
 from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
 from acs.cwmp.compatibility import huawei_telemetry
+from acs.cwmp.compatibility.evidence import safe_text
 from acs.cwmp.compatibility.generic import GenericInventoryNormalizer
 from acs.cwmp.compatibility.huawei import HuaweiEG8145X6Profile
+from acs.cwmp.compatibility.query_evidence import build_query_evidence
+from acs.domain.cpe.inform import Parameter
 from acs.domain.cpe.inventory import NormalizedInventory
 from acs.domain.cpe.telemetry import TelemetryCollection
+from acs.domain.operations.collection import CONCRETE_OBJECT
 from acs.domain.operations.query import (
     ParameterInfo,
     QueryConflict,
+    QueryKind,
     QueryPlan,
     QueryReply,
     QueryResultItem,
@@ -40,9 +44,7 @@ V5_TARGET = QueryTarget(
 )
 V5_PROFILE = "huawei-eg8145v5-v2-v5r021c00s210"
 # Structural discovery only. No values are read outside the separate reviewed plan.
-DISCOVERY_PATH = re.compile(
-    r"InternetGatewayDevice\.(?:(?:WANDevice|X_HW_DEBUG)\.(?:(?:[A-Za-z_][A-Za-z0-9_]{0,63}|[1-9][0-9]{0,3})\.){0,8})?"
-)
+DISCOVERY_PATH = CONCRETE_OBJECT
 DISCOVERY_FIELDS = frozenset(
     {
         "ExternalIPAddress",
@@ -71,6 +73,33 @@ DISCOVERY_FIELDS = frozenset(
 
 
 class HuaweiQueryPolicy:
+    def permitted_values(
+        self, reply: QueryReply, plan: QueryPlan
+    ) -> tuple[Parameter, ...]:
+        # Only reviewed DeviceInfo leaves; never arbitrary credential paths.
+        if plan.scope != "device_info":
+            return ()
+        return tuple(
+            p
+            for p in reply.parameters
+            if p.name in NAMES
+            and p.name in plan.names
+            and p.value_type == "xsd:string"
+            and safe_text(p.value, 256)
+        )
+
+    def evidence(
+        self, reply: QueryReply, plan: QueryPlan, kind: QueryKind, at: datetime
+    ) -> str:
+        count = (
+            len(reply.names)
+            if reply.kind == "get_parameter_names"
+            else len(reply.parameters)
+        )
+        if reply.kind == "get_parameter_names":
+            reply = replace(reply, names=self.discovery_names(reply, plan))
+        return build_query_evidence(reply, plan, kind, at, count)
+
     def restore(
         self,
         profile_id: str,
@@ -115,7 +144,9 @@ class HuaweiQueryPolicy:
             return QueryPlan(profile, "1", target, (), parameter_path, scope=scope)
         if parameter_path is not None:
             raise QueryConflict("unsupported_path")
-        return QueryPlan(profile, "1", target, NAMES, ROOT)
+        if names and (len(set(names)) != len(names) or not set(names).issubset(NAMES)):
+            raise QueryConflict("unsupported_parameters")
+        return QueryPlan(profile, "1", target, names if names else NAMES, ROOT)
 
     def collect(
         self, reply: QueryReply, plan: QueryPlan, at: datetime, operation_id: UUID

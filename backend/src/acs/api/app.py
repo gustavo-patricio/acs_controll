@@ -10,10 +10,12 @@ from fastapi.security.http import HTTPBase
 from acs.api.routes.cpe_accounts import create_router as create_accounts_router
 from acs.api.routes.cpes import create_router
 from acs.api.routes.health import router as health_router
+from acs.api.routes.profile_validations import create_router as create_profile_router
 from acs.api.routes.queries import create_router as create_queries_router
 from acs.application.services.authentication import Authenticator
 from acs.application.services.cpe_accounts import CpeAccountService
 from acs.application.services.cpe_inventory import CpeInventoryService
+from acs.application.services.profile_validations import ProfileValidationService
 from acs.application.services.queries import QueryService
 from acs.cwmp.compatibility.queries import HuaweiQueryPolicy
 from acs.domain.security import (
@@ -25,6 +27,7 @@ from acs.domain.security import (
 from acs.infrastructure.database.cpe_accounts import PostgresCpeAccountRepository
 from acs.infrastructure.database.cpe_inventory import PostgresCpeInventoryRepository
 from acs.infrastructure.database.database import Database
+from acs.infrastructure.database.profile_validation import ProfileValidationRepository
 from acs.infrastructure.database.queries import PostgresQueryRepository
 from acs.infrastructure.observability.security import configure_logging, record
 from acs.infrastructure.security.authentication import PostgresAuthenticator
@@ -37,6 +40,7 @@ def create_app(
     authenticator: Authenticator | None = None,
     accounts: CpeAccountService | None = None,
     queries: QueryService | None = None,
+    profile_validations: ProfileValidationService | None = None,
 ) -> FastAPI:
     settings = get_settings()
     accounts_enabled = (
@@ -52,7 +56,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-        nonlocal inventory, authenticator, accounts, queries
+        nonlocal inventory, authenticator, accounts, queries, profile_validations
         if inventory is not None:
             yield
             return
@@ -68,6 +72,9 @@ def create_app(
         configure_logging()
         inventory = CpeInventoryService(PostgresCpeInventoryRepository(database))
         queries = QueryService(PostgresQueryRepository(database, HuaweiQueryPolicy()))
+        profile_validations = ProfileValidationService(
+            ProfileValidationRepository(database)
+        )
         authenticator = PostgresAuthenticator(database)
         if accounts_enabled:
             accounts = CpeAccountService(PostgresCpeAccountRepository(database))
@@ -78,6 +85,7 @@ def create_app(
             authenticator = None
             accounts = None
             queries = None
+            profile_validations = None
             await database.close()
 
     async def get_inventory(request: Request) -> CpeInventoryService | None:
@@ -116,6 +124,9 @@ def create_app(
     application.include_router(health_router)
     application.include_router(
         create_queries_router(lambda: queries, lambda: authenticator)
+    )
+    application.include_router(
+        create_profile_router(lambda: profile_validations, lambda: authenticator)
     )
     if accounts_enabled:
         application.include_router(

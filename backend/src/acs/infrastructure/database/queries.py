@@ -9,12 +9,20 @@ from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acs.application.services.queries import QueryPolicy
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
+from acs.domain.operations.collection import (
+    CONCRETE_OBJECT,
+    CollectionProgress,
+    CollectionSpec,
+)
+from acs.domain.operations.export import ExportSnapshot
 from acs.domain.operations.query import (
+    CatalogEntry,
     QueryCommand,
     QueryConflict,
     QueryKind,
@@ -27,13 +35,20 @@ from acs.domain.operations.query import (
     QueryState,
     QueryTarget,
 )
+from acs.infrastructure.database import collection_jobs, result_export
 from acs.infrastructure.database.cwmp_models import Cpe, CwmpSessionRow
 from acs.infrastructure.database.database import Database
 from acs.infrastructure.database.inform_repository import (
     PostgresInformRepository,
     session_value,
 )
-from acs.infrastructure.database.query_models import QueryAttemptRow, QueryOperationRow
+from acs.infrastructure.database.query_models import (
+    CollectionJobRow,
+    ParameterCatalogRow,
+    ParameterValueRow,
+    QueryAttemptRow,
+    QueryOperationRow,
+)
 from acs.infrastructure.database.telemetry import update_telemetry
 
 
@@ -67,10 +82,15 @@ def operation(row: QueryOperationRow, attempted: bool) -> QueryOperation:
         int(attempted),
         cast(QueryScope, row.scope),
         row.parameter_path,
+        row.capture_evidence,
+        row.evidence_payload is not None,
     )
 
 
 class PostgresQueryRepository:
+    async def export_snapshot(self, cpe_id: UUID, prefix: str) -> ExportSnapshot:
+        return await result_export.snapshot(self.database, cpe_id, prefix)
+
     def __init__(self, database: Database, policy: QueryPolicy) -> None:
         self.database = database
         self.policy = policy
@@ -121,7 +141,17 @@ class PostgresQueryRepository:
         *,
         scope: QueryScope = "device_info",
         parameter_path: str | None = None,
+        capture_evidence: bool = False,
+        parameter_names: tuple[str, ...] = (),
     ) -> QueryOperation:
+        if parameter_names and (
+            kind != "get_parameter_values"
+            or scope != "device_info"
+            or len(set(parameter_names)) != len(parameter_names)
+            or len(parameter_names) > 16
+        ):
+            raise QueryConflict("unsupported_parameters")
+        parameter_names = tuple(sorted(parameter_names))
         try:
             async with self.database.session() as db, db.begin():
                 cpe = await self._cpe(db, cpe_id)
@@ -133,15 +163,28 @@ class PostgresQueryRepository:
                     )
                 )
                 if old is not None:
-                    if (old.kind, old.scope, old.parameter_path) != (
+                    if (
+                        old.kind,
+                        old.scope,
+                        old.parameter_path,
+                        old.capture_evidence,
+                    ) != (
                         kind,
                         scope,
                         parameter_path,
+                        capture_evidence,
+                    ):
+                        raise QueryConflict("idempotency_conflict")
+                    if (
+                        scope == "device_info"
+                        and tuple(old.requested_names) != parameter_names
                     ):
                         raise QueryConflict("idempotency_conflict")
                     return operation(
                         old, await db.get(QueryAttemptRow, old.id) is not None
                     )
+                if await collection_jobs.active(db, cpe_id):
+                    raise QueryConflict("collection_in_progress")
                 if await db.scalar(
                     select(QueryOperationRow.id).where(
                         QueryOperationRow.cpe_id == cpe_id,
@@ -185,7 +228,10 @@ class PostgresQueryRepository:
                             ):
                                 discovered.add(name)
                 plan = self.policy.plan(
-                    target(cpe), scope, parameter_path, tuple(discovered)
+                    target(cpe),
+                    scope,
+                    parameter_path,
+                    parameter_names or tuple(discovered),
                 )
                 row = QueryOperationRow(
                     id=uuid4(),
@@ -194,8 +240,9 @@ class PostgresQueryRepository:
                     kind=kind,
                     scope=scope,
                     parameter_path=parameter_path,
+                    capture_evidence=capture_evidence,
                     requested_names=list(plan.names)
-                    if scope in ("wan", "optical")
+                    if scope in ("wan", "optical") or parameter_names
                     else [],
                     state="pending",
                     profile_id=plan.profile_id,
@@ -211,6 +258,82 @@ class PostgresQueryRepository:
                 db.add(row)
                 await db.flush()
                 return operation(row, False)
+        except SQLAlchemyError:
+            raise StorageUnavailable from None
+
+    async def create_collection(
+        self, cpe_id: UUID, spec: CollectionSpec, key: UUID, actor: UUID, now: datetime
+    ) -> CollectionProgress:
+        try:
+            async with self.database.session() as db, db.begin():
+                cpe = await self._cpe(db, cpe_id)
+                await self._expire(db, cpe_id, now)
+                row = await collection_jobs.create(
+                    db, cpe_id, target(cpe), self.policy, spec, key, actor, now
+                )
+                return collection_jobs.progress(row)
+        except SQLAlchemyError:
+            raise StorageUnavailable from None
+
+    async def get_collection(
+        self, cpe_id: UUID, job_id: UUID, now: datetime
+    ) -> CollectionProgress:
+        try:
+            async with self.database.session() as db, db.begin():
+                cpe = await self._cpe(db, cpe_id)
+                row = await db.get(CollectionJobRow, job_id, with_for_update=True)
+                if row is None or row.cpe_id != cpe_id:
+                    raise QueryNotFound
+                await self._expire(db, cpe_id, now)
+                await collection_jobs.advance(db, row, target(cpe), self.policy, now)
+                return collection_jobs.progress(row)
+        except SQLAlchemyError:
+            raise StorageUnavailable from None
+
+    async def catalog(
+        self, cpe_id: UUID, prefix: str, limit: int, offset: int
+    ) -> tuple[CatalogEntry, ...]:
+        try:
+            async with self.database.session() as db:
+                if await db.get(Cpe, cpe_id) is None:
+                    raise QueryNotFound
+                rows = (
+                    await db.scalars(
+                        select(ParameterCatalogRow)
+                        .where(
+                            ParameterCatalogRow.cpe_id == cpe_id,
+                            ParameterCatalogRow.path.startswith(
+                                prefix, autoescape=True
+                            ),
+                        )
+                        .order_by(ParameterCatalogRow.path)
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                ).all()
+                return tuple(
+                    CatalogEntry(
+                        r.cpe_id,
+                        r.path,
+                        r.is_object,
+                        r.writable,
+                        r.observed_at,
+                        r.operation_id,
+                    )
+                    for r in rows
+                )
+        except SQLAlchemyError:
+            raise StorageUnavailable from None
+
+    async def get_evidence(self, cpe_id: UUID, operation_id: UUID) -> str:
+        try:
+            async with self.database.session() as db:
+                row = await db.get(QueryOperationRow, operation_id)
+                if row is None or row.cpe_id != cpe_id:
+                    raise QueryNotFound
+                if row.evidence_payload is None:
+                    raise QueryConflict("evidence_unavailable")
+                return row.evidence_payload
         except SQLAlchemyError:
             raise StorageUnavailable from None
 
@@ -269,6 +392,11 @@ class PostgresQueryRepository:
                 )
                 assert session is not None
                 await self._expire(db, cpe_id, now)
+                job = await collection_jobs.active(db, cpe_id)
+                if job is not None:
+                    await collection_jobs.advance(
+                        db, job, target(cpe), self.policy, now
+                    )
                 if reply is not None:
                     return await self._reply(db, cpe, session, reply, now)
                 if session.state == "completed":
@@ -400,6 +528,12 @@ class PostgresQueryRepository:
                         )
                 except QueryConflict:
                     reason = "not_internet_pppoe"
+            elif row.requested_names:
+                permitted = self.policy.permitted_values(reply, plan)
+                if len(permitted) != len(reply.parameters):
+                    reason = "invalid_values"
+                else:
+                    results = [QueryResultItem(p.name, p.value) for p in permitted]
             elif any(p.value_type != "xsd:string" for p in reply.parameters):
                 reason = "invalid_values"
             else:
@@ -413,7 +547,11 @@ class PostgresQueryRepository:
                     reason = "invalid_values"
         else:
             if any(
-                not item.name.startswith(plan.parameter_path)
+                item.name == plan.parameter_path
+                or not CONCRETE_OBJECT.fullmatch(
+                    item.name if item.name.endswith(".") else item.name + "."
+                )
+                or not item.name.startswith(plan.parameter_path)
                 or "." in item.name[len(plan.parameter_path) :].rstrip(".")
                 for item in reply.names
             ):
@@ -436,6 +574,69 @@ class PostgresQueryRepository:
             return session_value(session), None
         if row.state != "dispatched" or session.state != "awaiting_response":
             raise InvalidSession
+        if reply.kind == "get_parameter_names" and reason is None:
+            names = reply.names
+            job = await collection_jobs.active(db, cpe.id)
+            if job is not None and job.current_operation_id == row.id:
+                remaining = job.spec["max_entries"] - job.entry_count
+                if len(names) > remaining:
+                    collection_jobs.limited(job, "max_entries")
+                    names = tuple(sorted(names, key=lambda p: p.name))[:remaining]
+            for item in names:
+                statement = insert(ParameterCatalogRow).values(
+                    cpe_id=cpe.id,
+                    path=item.name,
+                    is_object=item.name.endswith("."),
+                    writable=item.writable,
+                    observed_at=now,
+                    operation_id=row.id,
+                )
+                await db.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[
+                            ParameterCatalogRow.cpe_id,
+                            ParameterCatalogRow.path,
+                        ],
+                        set_={
+                            key: getattr(statement.excluded, key)
+                            for key in (
+                                "is_object",
+                                "writable",
+                                "observed_at",
+                                "operation_id",
+                            )
+                        },
+                        where=ParameterCatalogRow.observed_at <= now,
+                    )
+                )
+        if reply.kind == "get_parameter_values" and reason is None:
+            for item in self.policy.permitted_values(reply, plan):
+                statement = insert(ParameterValueRow).values(
+                    cpe_id=cpe.id,
+                    path=item.name,
+                    xml_type=item.value_type,
+                    value=item.value,
+                    observed_at=now,
+                    operation_id=row.id,
+                )
+                await db.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[
+                            ParameterValueRow.cpe_id,
+                            ParameterValueRow.path,
+                        ],
+                        set_={
+                            key: getattr(statement.excluded, key)
+                            for key in (
+                                "xml_type",
+                                "value",
+                                "observed_at",
+                                "operation_id",
+                            )
+                        },
+                        where=ParameterValueRow.observed_at <= now,
+                    )
+                )
         if inventory is not None:
             await PostgresInformRepository.update_inventory(db, cpe.id, inventory)
         if telemetry is not None:
@@ -450,5 +651,14 @@ class PostgresQueryRepository:
             {"name": item.name, "value": item.value, "writable": item.writable}
             for item in results
         ]
+        if row.capture_evidence and reason != "unexpected_parameters":
+            row.evidence_payload = self.policy.evidence(
+                reply, plan, cast(QueryKind, row.kind), now
+            )
         attempt.response_digest = digest
-        return self._finish(session, now)
+        result = self._finish(session, now)
+        await db.flush()
+        job = await collection_jobs.active(db, cpe.id)
+        if job is not None:
+            await collection_jobs.advance(db, job, target(cpe), self.policy, now)
+        return result
