@@ -14,6 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acs.application.services.queries import QueryPolicy
+from acs.cwmp.compatibility.evidence import safe_text
+from acs.cwmp.compatibility.result_export import SENSITIVE
 from acs.domain.events.session import CwmpSession, InvalidSession, StorageUnavailable
 from acs.domain.operations.collection import (
     CONCRETE_OBJECT,
@@ -146,7 +148,7 @@ class PostgresQueryRepository:
     ) -> QueryOperation:
         if parameter_names and (
             kind != "get_parameter_values"
-            or scope != "device_info"
+            or scope not in ("device_info", "wan", "optical")
             or len(set(parameter_names)) != len(parameter_names)
             or len(parameter_names) > 16
         ):
@@ -177,6 +179,10 @@ class PostgresQueryRepository:
                         raise QueryConflict("idempotency_conflict")
                     if (
                         scope == "device_info"
+                        and tuple(old.requested_names) != parameter_names
+                    ) or (
+                        scope in ("wan", "optical")
+                        and parameter_names
                         and tuple(old.requested_names) != parameter_names
                     ):
                         raise QueryConflict("idempotency_conflict")
@@ -227,12 +233,24 @@ class PostgresQueryRepository:
                                 parameter_path
                             ):
                                 discovered.add(name)
+                if (
+                    scope in ("wan", "optical")
+                    and parameter_names
+                    and not set(parameter_names).issubset(discovered)
+                ):
+                    raise QueryConflict("discovery_required")
                 plan = self.policy.plan(
                     target(cpe),
                     scope,
                     parameter_path,
                     parameter_names or tuple(discovered),
                 )
+                if (
+                    scope in ("wan", "optical")
+                    and parameter_names
+                    and set(plan.names) != set(parameter_names)
+                ):
+                    raise QueryConflict("unsupported_parameters")
                 row = QueryOperationRow(
                     id=uuid4(),
                     cpe_id=cpe_id,
@@ -322,6 +340,20 @@ class PostgresQueryRepository:
                     )
                     for r in rows
                 )
+        except SQLAlchemyError:
+            raise StorageUnavailable from None
+
+    async def get_private_observations(
+        self, cpe_id: UUID, operation_id: UUID
+    ) -> list[dict[str, str]]:
+        try:
+            async with self.database.session() as db:
+                row = await db.get(QueryOperationRow, operation_id)
+                if row is None or row.cpe_id != cpe_id:
+                    raise QueryNotFound
+                if row.private_observations is None:
+                    raise QueryConflict("private_observations_unavailable")
+                return row.private_observations
         except SQLAlchemyError:
             raise StorageUnavailable from None
 
@@ -651,6 +683,28 @@ class PostgresQueryRepository:
             {"name": item.name, "value": item.value, "writable": item.writable}
             for item in results
         ]
+        if (
+            row.capture_evidence
+            and reason != "unexpected_parameters"
+            and reply.kind == "get_parameter_values"
+            and plan.scope in ("wan", "optical")
+        ):
+            private_values: list[dict[str, str]] = []
+            for parameter in reply.parameters:
+                if (
+                    parameter.name in plan.names
+                    and not SENSITIVE.search(parameter.name)
+                    and safe_text(parameter.value, 4096)
+                    and safe_text(parameter.value_type, 64)
+                ):
+                    private_values.append(
+                        {
+                            "path": parameter.name,
+                            "xml_type": parameter.value_type,
+                            "value": parameter.value,
+                        }
+                    )
+            row.private_observations = private_values
         if row.capture_evidence and reason != "unexpected_parameters":
             row.evidence_payload = self.policy.evidence(
                 reply, plan, cast(QueryKind, row.kind), now

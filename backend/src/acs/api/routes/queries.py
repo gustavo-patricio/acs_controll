@@ -371,6 +371,36 @@ def create_router(
             raise failure(exc) from None
 
     @router.get(
+        "/{operation_id}/private-observations",
+        summary="Consultar valores reais coletados para homologação",
+        response_model=list[dict[str, str]],
+    )
+    async def private_observations(
+        cpe_id: UUID,
+        operation_id: UUID,
+        response: Response,
+        principal: Annotated[Principal, Depends(authenticate)],
+    ) -> list[dict[str, str]]:
+        try:
+            values = await target().get_private_observations(
+                cpe_id, operation_id, principal
+            )
+        except (AccessDenied, QueryNotFound, QueryConflict, StorageUnavailable) as exc:
+            raise failure(exc) from None
+        request_id = str(uuid4())
+        record(
+            "query_private_observations_read",
+            request_id,
+            200,
+            principal.id,
+            operation_id=operation_id,
+        )
+        response.headers.update(
+            {"Cache-Control": "no-store", "X-Request-ID": request_id}
+        )
+        return values
+
+    @router.get(
         "/{operation_id}/evidence",
         response_class=Response,
         summary="Baixar evidência anonimizada da consulta",

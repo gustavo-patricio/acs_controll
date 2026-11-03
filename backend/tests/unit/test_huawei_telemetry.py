@@ -185,3 +185,33 @@ def test_v5_fixture_exact_profile() -> None:
         normalizer.normalize(changed, datetime.now(UTC)).profile_id
         == "generic-device-info"
     )
+
+
+def test_x6_observed_service_label_is_limited_to_reviewed_firmware() -> None:
+    from acs.cwmp.compatibility.queries import TARGET
+
+    names = tuple(
+        WAN + suffix
+        for suffix in ("TransportType", "X_HW_SERVICELIST", "ExternalIPAddress")
+    )
+    reply = QueryReply(
+        "test",
+        "get_parameter_values",
+        parameters=tuple(
+            Parameter(n, v, "xsd:string")
+            for n, v in zip(
+                names, ("PPPoE", "TR069_INTERNET", "192.0.2.10"), strict=True
+            )
+        ),
+    )
+    policy = HuaweiQueryPolicy()
+    plan = policy.plan(TARGET, "wan", WAN, names)
+    result = telemetry.collect(reply, plan, datetime.now(UTC), uuid4())
+    assert next(f for f in result.fields if f.name == "service_list").value == (
+        "TR069",
+        "INTERNET",
+    )
+    assert next(f for f in result.fields if f.name == "ipv4").value == ("192.0.2.10",)
+    v5_plan = policy.plan(V5_TARGET, "wan", WAN, names)
+    with pytest.raises(QueryConflict, match="not_internet_pppoe"):
+        telemetry.collect(reply, v5_plan, datetime.now(UTC), uuid4())

@@ -59,6 +59,7 @@ class QueryOperationRow(Base):
     parameter_path: Mapped[str | None] = mapped_column(String(256))
     capture_evidence: Mapped[bool] = mapped_column(Boolean, server_default="false")
     evidence_payload: Mapped[str | None] = mapped_column(Text)
+    private_observations: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)
     requested_names: Mapped[list[str]] = mapped_column(
         JSONB, server_default="[]", default=list
     )

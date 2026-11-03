@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
+from acs.cwmp.compatibility.huawei import HuaweiEG8145X6Profile
 from acs.domain.cpe.inform import Parameter
 from acs.domain.cpe.telemetry import (
     TelemetryCollection,
@@ -80,7 +81,9 @@ def select_names(path: str, scope: str, available: tuple[str, ...]) -> tuple[str
     return names
 
 
-def observe(name: TelemetryName, parameter: Parameter) -> TelemetryObservation:
+def observe(
+    name: TelemetryName, parameter: Parameter, profile_id: str | None = None
+) -> TelemetryObservation:
     raw = parameter.value.strip()
     if (
         not raw
@@ -158,6 +161,12 @@ def observe(name: TelemetryName, parameter: Parameter) -> TelemetryObservation:
                 "service_list": {"INTERNET", "TR069", "VOIP", "IPTV", "OTHER"},
             }
             values = tuple(raw.split(","))
+            if (
+                name == "service_list"
+                and profile_id == HuaweiEG8145X6Profile.profile_id
+                and raw == "TR069_INTERNET"
+            ):
+                values = ("TR069", "INTERNET")
             if name != "service_list" and len(values) != 1:
                 raise ValueError
             if any(v not in choices[name] for v in values):
@@ -176,7 +185,7 @@ def collect(
         name = field_name(plan.parameter_path, parameter.name, plan.scope)
         if name is None:
             raise QueryConflict("unexpected_parameters")
-        observation = observe(name, parameter)
+        observation = observe(name, parameter, plan.profile_id)
         observation = replace(observation, source_parameters=(parameter.name,))
         previous = fields.get(name)
         if previous is not None and name == "ipv6":
@@ -259,7 +268,7 @@ def result_items(
     for parameter in reply.parameters:
         name = field_name(plan.parameter_path, parameter.name, plan.scope)
         assert name is not None
-        observation = observe(name, parameter)
+        observation = observe(name, parameter, plan.profile_id)
         value = observation.value
         items.append(
             QueryResultItem(

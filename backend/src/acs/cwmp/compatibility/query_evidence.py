@@ -174,7 +174,7 @@ def build_query_evidence(
             ) and re.fullmatch(r"[+-]?[0-9]{1,10}(?:\.[0-9]{1,4})?", raw):
                 retained.append(parameter)
             continue
-        observation = huawei_telemetry.observe(name, parameter)
+        observation = huawei_telemetry.observe(name, parameter, plan.profile_id)
         if observation.state not in ("valid", "unavailable"):
             continue
         if observation.state == "valid" and name in ("ipv4", "ipv6", "dns", "mac"):

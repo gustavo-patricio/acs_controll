@@ -92,6 +92,9 @@ class QueryRepository(Protocol):
         capture_evidence: bool = False,
         parameter_names: tuple[str, ...] = (),
     ) -> QueryOperation: ...
+    async def get_private_observations(
+        self, cpe_id: UUID, operation_id: UUID
+    ) -> list[dict[str, str]]: ...
     async def get_evidence(self, cpe_id: UUID, operation_id: UUID) -> str: ...
     async def get(
         self, cpe_id: UUID, operation_id: UUID, now: datetime
@@ -156,6 +159,12 @@ class QueryService:
     ) -> tuple[CatalogEntry, ...]:
         principal.require("inventory:read")
         return await self.repository.catalog(cpe_id, prefix, limit, offset)
+
+    async def get_private_observations(
+        self, cpe_id: UUID, operation_id: UUID, principal: Principal
+    ) -> list[dict[str, str]]:
+        principal.require("cpe:query")
+        return await self.repository.get_private_observations(cpe_id, operation_id)
 
     async def get_evidence(
         self, cpe_id: UUID, operation_id: UUID, principal: Principal
