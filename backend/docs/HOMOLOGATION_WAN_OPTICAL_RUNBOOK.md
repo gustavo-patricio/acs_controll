@@ -107,9 +107,9 @@ curl --cacert "$ACS_CA" --user "$ACS_ADMIN_USER" \
 Repita para TX com outra chave e folha comprovada, ou use as duas folhas no mesmo
 array se ambas estiverem descobertas. A política óptica atual só reconhece
 `RXPower` e `TXPower` no objeto `X_GponInterafceConfig.` com instância real de
-`WANDevice`; outros caminhos retornam 409 até revisão explícita. Mesmo quando a
-leitura retorna um número, a escala/unidade está **não verificada**. A operação
-pode terminar `failed/unverified_units` e ainda ter `evidence_available=true`.
+`WANDevice`; outros caminhos retornam 409 até revisão explícita. Para os dois firmwares homologados, valores `xsd:int` são publicados em dBm
+com precisão inteira. Outros tipos continuam não verificados e podem terminar
+`failed/unverified_units`, com `evidence_available=true`.
 
 Para WAN PPPoE, selecione o **objeto concreto** descoberto de cada WAN e suas
 folhas aprovadas. O perfil exige `TransportType` e `X_HW_SERVICELIST` no mesmo

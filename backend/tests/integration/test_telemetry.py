@@ -306,15 +306,21 @@ async def test_explicit_optical_leaves_require_recent_discovery_and_preserve_evi
                     command.rpc_id,
                     "get_parameter_values",
                     names=(leaf,),
-                    values=("-2114",),
-                )
+                    values=("-21",),
+                ).replace(b'xsi:type="xsd:string"', b'xsi:type="xsd:int"')
             ),
             now + timedelta(seconds=3),
         )
         result = (await client.get(path + "/" + created.json()["id"])).json()
+        assert result["state"] == "succeeded" and result["failure_reason"] is None
+        view = await PostgresCpeInventoryRepository(cwmp_database).get_telemetry(
+            cpe.cpe_id
+        )
+        field = view.optical[0].fields.rx_power
+        assert field.value == -21.0 and field.unit == "dBm" and field.state == "valid"
         assert (
-            result["state"] == "failed"
-            and result["failure_reason"] == "unverified_units"
+            field.provenance is not None
+            and str(field.provenance.operation_id) == created.json()["id"]
         )
         assert result["evidence_available"]
         evidence = await client.get(path + "/" + created.json()["id"] + "/evidence")

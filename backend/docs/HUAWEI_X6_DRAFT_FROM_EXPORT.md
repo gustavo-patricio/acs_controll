@@ -48,8 +48,8 @@ múltiplas WANs.
 
 Os parâmetros `X_GponInterafceConfig.RXPower` e `TXPower` retornaram inteiros
 `-21` e `2`. A interface mostrou valores próximos em dBm, com casas decimais.
-Isso não determina a regra de arredondamento nem valida precisão e escala em
-toda a faixa: os campos ópticos continuam `unverified`. A VLAN e o estado PON
+Por decisão de homologação, valores `xsd:int` desse perfil são publicados em
+dBm com precisão inteira. A regra de arredondamento da CPE permanece desconhecida. A VLAN e o estado PON
 continuam pendentes de caminho e semântica comprovados.
 
 A coleta WAN implementada é uma capacidade de laboratório do perfil exato;

@@ -1,6 +1,6 @@
 """Candidate Huawei telemetry mappings, gated by per-device discovery.
 
-Real WAN/optical homologation is pending; optical units remain unverified.
+Optical integer readings are interpreted only for the two reviewed profiles.
 """
 
 import ipaddress
@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from acs.cwmp.compatibility.huawei import HuaweiEG8145X6Profile
+from acs.cwmp.compatibility.huawei import HuaweiEG8145V5Profile, HuaweiEG8145X6Profile
 from acs.domain.cpe.inform import Parameter
 from acs.domain.cpe.telemetry import (
     TelemetryCollection,
@@ -41,9 +41,9 @@ WAN_FIELDS: dict[str, TelemetryName] = {
     "TransportType": "transport_type",
     "X_HW_SERVICELIST": "service_list",
 }
-# Unverified for both eligible firmwares. A future verified conversion must be
-# selected by profile/revision, never enabled globally for all Huawei devices.
-OPTICAL_DBM_SCALE: float | None = None
+OPTICAL_INTEGER_DBM_PROFILES = frozenset(
+    {HuaweiEG8145X6Profile.profile_id, HuaweiEG8145V5Profile.profile_id}
+)
 
 
 def field_name(path: str, parameter: str, scope: str) -> TelemetryName | None:
@@ -103,11 +103,15 @@ def observe(
             ) or not re.fullmatch(r"[+-]?[0-9]{1,10}(?:\.[0-9]{1,4})?", raw):
                 raise ValueError
             number = float(raw)
-            if OPTICAL_DBM_SCALE is None:
+            if (
+                profile_id not in OPTICAL_INTEGER_DBM_PROFILES
+                or parameter.value_type != "xsd:int"
+                or not re.fullmatch(r"[+-]?[0-9]{1,10}", raw)
+            ):
                 return TelemetryObservation(
                     name, "unverified", parameter.name, reason="unverified_unit"
                 )
-            value = round(number * OPTICAL_DBM_SCALE, 4)
+            value = number
             reason = "out_of_range"
             if not math.isfinite(value) or not -80 <= value <= 20:
                 raise ValueError
@@ -252,8 +256,7 @@ def result_items(
     reply: QueryReply, plan: QueryPlan, collection: TelemetryCollection
 ) -> tuple[QueryResultItem, ...]:
     if plan.scope == "optical":
-        # A numeric calibration result is explicitly raw; canonical optics remain
-        # unverified until their unit/scale is confirmed. No malformed raw value survives.
+        # Preserve the reported numeric text in the operation result.
         states = {field.source_parameter: field.state for field in collection.fields}
         return tuple(
             QueryResultItem(

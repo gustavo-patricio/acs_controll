@@ -8,20 +8,16 @@ iniciada pela CPE. Não altera WAN, autenticação PPPoE ou configuração ópti
 
 ## Estado da entrega e homologação
 
-A implementação está disponível para testes de laboratório; a coleta real de
-WAN/óptica ainda não está homologada. A política admite EG8145V5-V2/V5R021C00S210
-e EG8145X6-10/V5R022C00S364, exige descoberta prévia e mantém capacidades sem
-homologação declarada. Elegibilidade da consulta não comprova os mapeamentos.
+A coleta está disponível para testes de laboratório nos perfis exatos
+EG8145V5-V2/V5R021C00S210 e EG8145X6-10/V5R022C00S364. Em bancada, ambos
+retornaram RX/TX `xsd:int` próximos dos valores em dBm exibidos na interface e
+no ACS anterior. Por decisão de homologação, esses inteiros são publicados em
+`value` com unidade `dBm`, sem inventar casas decimais ou uma regra de
+arredondamento. Outros tipos continuam `unverified`. Firmware diferente não é
+aceito automaticamente. A descoberta por CPE continua necessária.
 
-- V5-V2: existe Inform anonimizado e descoberta real de alguns objetos WAN/ópticos.
-  Não há validação real concluída dos valores WAN/IPv6 ou da escala óptica.
-- X6-10: DeviceInfo já foi validado em bancada; a tentativa recente de descoberta
-  WAN expirou. Os testes de telemetria desse perfil usam valores sintéticos.
-- A regra candidata de IPv6 exige o caminho descoberto
-  `X_HW_IPv6.IPv6Address.{i}.IPAddress`; ainda precisa de confirmação na bancada.
-- Rx/Tx permanecem `unverified`, sem valor canônico ou unidade presumida.
-  Uma futura escala deverá ser vinculada a perfil/revisão, nunca habilitada
-  globalmente para todos os equipamentos Huawei.
+A VLAN e o estado PON permanecem pendentes. A interpretação do serviço WAN
+`TR069_INTERNET` continua restrita ao perfil X6; a V5 exige homologação própria.
 
 A evolução será feita pelo [coletor de evidências e reprodução offline](CPE_COMPATIBILITY_ARCHITECTURE.md).
 O [ponto de retomada](WORK_STATUS.md) registra verificações e o próximo incremento.
@@ -124,10 +120,11 @@ uv run acs-query CPE_UUID --kind get_parameter_values --scope optical --path CAM
 ```
 
 A CLI registra o UID local e imprime somente estado/IDs; valores estão disponíveis
-na API autenticada de operações. Os resultados ópticos para calibração contêm
-apenas números brutos validados sintaticamente, sem pressupor dBm. Uma operação
-com unidade não verificada termina `failed/unverified_units`, preserva a
-observação `unverified` e não publica potência canônica.
+na API autenticada de operações. Os perfis acima publicam leituras ópticas `xsd:int` como dBm inteiros após
+nova coleta. Um tipo não homologado termina `failed/unverified_units`, preserva
+a observação `unverified` e não publica potência canônica. Os pacotes de
+evidência permanecem marcados com unidade não verificada por eles próprios; a
+interpretação pertence ao perfil.
 
 ## Persistência e validação
 

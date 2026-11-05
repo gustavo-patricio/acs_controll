@@ -56,19 +56,37 @@ def test_values(
     assert raw not in repr(result)
 
 
-def test_optical_conversion_requires_verified_scale(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(telemetry, "OPTICAL_DBM_SCALE", 0.01)
+@pytest.mark.parametrize("profile_id", ["huawei-eg8145x6-10-v5r022c00s364", V5_PROFILE])
+def test_optical_integer_dbm_for_reviewed_profiles(profile_id: str) -> None:
     result = telemetry.observe(
-        "rx_power", Parameter(OPTICAL + "RXPower", "-2050", "xsd:int")
+        "rx_power", Parameter(OPTICAL + "RXPower", "-21", "xsd:int"), profile_id
     )
-    assert (result.value, result.unit) == (-20.5, "dBm")
+    assert (result.state, result.value, result.unit) == ("valid", -21.0, "dBm")
     assert (
         telemetry.observe(
-            "tx_power", Parameter(OPTICAL + "TXPower", "99999", "xsd:int")
+            "tx_power", Parameter(OPTICAL + "TXPower", "2", "xsd:int"), profile_id
+        ).value
+        == 2.0
+    )
+    assert (
+        telemetry.observe(
+            "tx_power", Parameter(OPTICAL + "TXPower", "99999", "xsd:int"), profile_id
         ).state
         == "invalid"
+    )
+    assert (
+        telemetry.observe(
+            "rx_power", Parameter(OPTICAL + "RXPower", "-21", "xsd:string"), profile_id
+        ).state
+        == "unverified"
+    )
+    assert (
+        telemetry.observe(
+            "rx_power",
+            Parameter(OPTICAL + "RXPower", "-21", "xsd:int"),
+            "other-profile",
+        ).state
+        == "unverified"
     )
 
 
